@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/lql19/Desktop/**)",
+      "Bash(pip install *)",
+      "Bash(python -c \"import numpy, pandas; print\\('numpy', numpy.__version__, '| pandas', pandas.__version__\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(rm -f class_manager.db)",
+      "Bash(python -c \"import openpyxl; print\\('openpyxl', openpyxl.__version__\\)\")",
+      "Bash(python -c \"import main; from app.init_db import init_db; init_db\\(\\); print\\('DB recreated'\\)\")",
+      "PowerShell(& \"g:\\\\�����ι���ϵͳ\\\\.venv\\\\Scripts\\\\python.exe\" \"g:\\\\�����ι���ϵͳ\\\\debug_click.py\")",
+      "PowerShell($conn = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue; if \\($conn\\) { $p = Get-Process -Id $conn.OwningProcess; $cmd = \\(Get-CimInstance Win32_Process -Filter \"ProcessId = $\\($conn.OwningProcess\\)\"\\).CommandLine; \"监听 8000 端口: PID $\\($p.Id\\) | $\\($p.ProcessName\\) | $cmd\"; try { $r = Invoke-WebRequest -Uri \"http://127.0.0.1:8000/api/health\" -UseBasicParsing -TimeoutSec 5; \"健康检查: HTTP $\\($r.StatusCode\\) $\\($r.Content\\)\" } catch { \"健康检查失败: $\\($_.Exception.Message\\)\" } } else { \"8000 端口无监听进程\" })",
+      "PowerShell(Out-File *)"
+    ]
+  }
+}

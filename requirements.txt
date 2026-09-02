@@ -1,0 +1,12 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+sqlalchemy>=2.0
+pydantic>=2.5
+python-dotenv>=1.0
+python-multipart>=0.0.9
+pandas>=2.0
+openpyxl>=3.1
+python-docx>=1.1
+pypdf>=4.0
+cryptography>=42.0
+apscheduler>=3.10

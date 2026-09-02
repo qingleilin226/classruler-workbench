@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>班主任工作台</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/vendor/element-plus.css">
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+  <div id="app"></div>
+
+  <!-- 依赖已本地化到 static/vendor/（私有化部署，离线可用） -->
+  <script src="/vendor/vue.global.prod.js"></script>
+  <!-- vue-demi 兼容层：pinia 的 IIFE 构建依赖全局 VueDemi，必须在 pinia 之前加载 -->
+  <script src="/vendor/vue-demi.iife.js"></script>
+  <script src="/vendor/pinia.iife.prod.js"></script>
+  <script src="/vendor/element-plus.full.min.js"></script>
+  <script src="/vendor/element-plus-icons.iife.min.js"></script>
+  <script src="/vendor/element-plus-zh-cn.min.js"></script>
+  <!-- Element Plus IIFE 只暴露 ElementPlus.*，补全全局 ElMessage/ElMessageBox 别名（视图与 api.js 均裸用） -->
+  <script>
+    window.ElMessage = ElementPlus.ElMessage;
+    window.ElMessageBox = ElementPlus.ElMessageBox;
+  </script>
+  <script src="/vendor/echarts.min.js"></script>
+  <script src="/vendor/xlsx.full.min.js"></script>
+  <script src="/vendor/pdf.min.js"></script>
+
+  <!-- 应用代码 -->
+  <script src="/js/api.js"></script>
+  <script src="/js/store.js"></script>
+  <script src="/js/utils.js"></script>
+  <script src="/js/components/ImportModal.js"></script>
+  <script src="/js/views/Login.js"></script>
+  <script src="/js/views/Dashboard.js"></script>
+  <script src="/js/views/Students.js"></script>
+  <script src="/js/views/Seats.js"></script>
+  <script src="/js/views/Duty.js"></script>
+  <script src="/js/views/Exams.js"></script>
+  <script src="/js/views/Committee.js"></script>
+  <script src="/js/views/Parents.js"></script>
+  <script src="/js/views/Timetable.js"></script>
+  <script src="/js/views/Settings.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>
