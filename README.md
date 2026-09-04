@@ -1,161 +1,252 @@
-# 班主任工作台
+# ClassRuler Workbench
 
-私有化部署的班级日常事务一体化管理系统，替代 Excel 管理班级事务。所有功能模块的数据围绕 **学生** 与 **学期** 两个核心维度关联，支持手动录入与文件导入（.xlsx / .docx / .pdf）双模式，导入过程必须经过**字段人工映射**，禁止静默导入。
+[中文版说明](README-CN.md)
 
-## 功能总览
+ClassRuler Workbench is a self-hosted classroom management system for homeroom teachers. It replaces scattered spreadsheets with one local web application for student rosters, seating plans, duty schedules, exam records, committee assignments, parent contacts, and timetables.
 
-| 模块 | 核心能力 |
+The application is designed for private, low-concurrency use. Data is organized around students, classes, and semesters and is stored locally by default.
+
+## Features
+
+| Module | Capabilities |
 |---|---|
-| 学生名单 | 搜索/状态筛选、行内编辑、三步走导入（含冲突检测 覆盖/跳过）、导出 Excel |
-| 座次表 | Div 矩阵、拖拽换座、保存为新版本（历史版本保留可回溯）、Word/PDF 坐标打标 |
-| 值日表 | 周视图日历、高亮当天、批量勾选、下周自动轮换（顺延一组） |
-| 成绩分析 | 统计卡片（均分/最高/及格率）、ECharts 分数分布图、学生明细（含班级排名，窗口函数计算）、Excel 多 Sheet 导入（列名→科目）、手动逐行录入 |
-| 班委名单 | 职位卡片墙、任职起止日期、一键导出 HTML 任职证明（可打印） |
-| 家长联系方式 | 手机号中间 4 位 `****` 脱敏，输入登录密码二次确认方可查看明文 |
-| 课程表 | 矩阵视图、合并单元格 Excel 导入（前端重构二维数组）、临时调课（原课置灰 + 新位置标「调」） |
+| Student roster | Search and filtering, inline editing, batch updates, soft deletion, Excel/Word/PDF import, conflict handling, and Excel export |
+| Seating plan | Create a blank grid, add or remove rows and columns, select students by name or student number, drag to swap seats, auto-arrange by student number, track unseated students, preserve empty cells, save version history, restore old versions, and export to Excel |
+| Duty schedule | Weekly view, current-day highlighting, batch assignment, next-week rotation, and Excel export |
+| Exam analysis | Create exams with a manually selected exam date, enter or import decimal scores, class statistics, score distributions, class rankings, student details, and Excel export |
+| Personal score analysis | Search by student name or number and view that student's scores and rankings across every recorded exam |
+| Committee | Manage positions and terms, and generate printable appointment certificates |
+| Parent contacts | Mask phone numbers by default and require password verification before revealing them |
+| Timetable | Grid editing, merged-cell Excel import, temporary course adjustments, cancellation of adjustments, and Excel export |
+| Settings | Change the user display name and password; add, switch, activate, or soft-delete classes and semesters |
 
-通用能力：
-- 多班级切换（默认预设 3 个班级，可扩展）；关闭浏览器再打开自动恢复上次选中的班级/学期
-- 所有删除均为软删除（`is_deleted`），不物理删除
-- 每个模块右上角「导出为 Excel」，中文表头、保留当前筛选条件
-- 全局异常拦截，统一返回 `{code, message, data}`；前端网络/解析错误明确 Toast，不白屏
-- 每日凌晨自动备份所有数据到 `./backup` 目录（保留最近 30 份）
-- 响应式适配 1366×768 笔记本与 iPad Pro 11" 横屏
+Shared behavior:
 
-## 技术栈
+- The last selected class and semester are restored when the browser is reopened.
+- Deletions are soft deletions. Related student, exam, seating, and timetable history is retained.
+- Deleting an active semester automatically activates the latest remaining semester when possible.
+- Import field mappings are remembered by user, import type, and source headers, and can still be changed before each import.
+- Import confirmation is transactional: any validation or database error rejects the entire import and writes no partial data.
+- Scores accept decimals in the range `-1000` to `750`, allowing progress/regression and total-score columns.
+- Uploads are limited to 20 MB.
+- The UI is optimized for 1366×768 laptops and iPad Pro 11-inch landscape layouts.
 
-- **后端**：Python 3.9+ / FastAPI / SQLAlchemy；成绩排名采用跨数据库兼容算法
-- **数据库**：默认 **SQLite**（零配置、事务一致、外键约束）；配置驱动后可切换 **PostgreSQL 15+**
-- **前端**：Vue 3 + Element Plus + Pinia + ECharts + SheetJS(xlsx) + pdf.js，依赖已放入 `static/vendor`，由 FastAPI 直接托管，**无需安装 Node.js**
-- **安全**：密码 PBKDF2 哈希；监护人手机号 Fernet 对称加密存储
-- **定时任务**：APScheduler 每日备份
+## Technology
 
-## 环境要求
+- Backend: Python 3.9+, FastAPI, SQLAlchemy, Pydantic
+- Database: SQLite by default; PostgreSQL 15+ can be configured
+- Frontend: Vue 3, Element Plus, Pinia, ECharts, SheetJS, and pdf.js
+- Security: PBKDF2 password hashing, bearer-token authentication, and Fernet encryption for guardian phone numbers
+- Scheduling: APScheduler for automatic backups
 
-- Python 3.9 及以上（Windows / macOS / Linux 均可）
-- 现代浏览器（Chrome / Edge / Safari）；前端依赖已本地化，可离线运行
+All frontend libraries are stored under `static/vendor`, so Node.js is not required to run the application.
 
-## 快速启动
+## Requirements
 
-### Windows 一键启动（推荐普通使用者）
+- Python 3.9 or newer
+- Windows, macOS, or Linux for command-line startup
+- Windows for the included one-click launch and stop files
+- A modern browser such as Chrome, Edge, Firefox, or Safari
 
-首次安装好依赖后，日常使用无需再打开终端运行 `main.py`：
+## Quick Start
 
-1. 双击项目根目录的 **`启动班主任工作台.bat`**。
-2. 程序会在后台启动，并自动打开 `http://127.0.0.1:8000`。
-3. 使用结束后可双击 **`关闭班主任工作台.bat`** 安全停止服务。
+### 1. Install dependencies
 
-重复双击启动文件不会开启多个服务；如果服务已经运行，只会打开浏览器。可以右键启动文件选择“发送到 → 桌面快捷方式”，以后直接从桌面进入。
-
-### 命令行启动（开发或维护）
+Using a virtual environment is recommended:
 
 ```bash
-# 1. 安装依赖（建议在虚拟环境中）
-pip install -r requirements.txt
+python -m venv .venv
+```
 
-# 2. 启动（首次启动自动建表、写入种子数据：3 个班级 + 示例学生/成绩/座次/值日/班委/课表）
+Windows:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+macOS or Linux:
+
+```bash
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+### 2. Start on Windows with one click
+
+Double-click `启动班主任工作台.bat` in the project directory. The launcher starts the server in the background and opens:
+
+```text
+http://127.0.0.1:8000
+```
+
+When finished, double-click `关闭班主任工作台.bat` to stop the background server safely.
+
+Starting the launcher more than once does not create duplicate servers. If the application is already running, it only opens the browser. You can create a desktop shortcut to the start file for non-technical users.
+
+### 3. Start from the command line
+
+```bash
 python main.py
-
-# 3. 浏览器访问
-#    http://localhost:8000
 ```
 
-> 开发模式（代码修改自动重载）：`uvicorn main:app --reload`
+Then visit `http://127.0.0.1:8000`.
 
-**默认账号**：`admin` / `admin123`（可在 `.env` 中修改，首次启动后生效）
-
-## 数据库初始化说明
-
-### 自动初始化（推荐）
-
-首次启动 `main.py` 时自动完成：
-1. 按 ORM 模型建表（`app/models.py`，含外键约束与唯一约束）
-2. 创建默认管理员账号
-3. 写入种子数据（3 个班级 × 2 学期、示例学生、座次方案、两次考试成绩、值日模板、班委、课程表）
-
-手动重建（删除数据库后重新初始化）：
+For development with automatic reload:
 
 ```bash
-python -c "import main; from app.init_db import init_db; init_db(force_seed=True)"
+uvicorn main:app --reload
 ```
 
-### 表结构（10 张核心表 + 4 张补充表）
+### Default account
 
-`classes`、`students`、`semesters`（部分唯一索引保证**同班仅一个激活学期**）、`seat_plans`、`seat_details`（位置/学生唯一约束）、`exam_records`、`scores`（考试+学生+科目唯一约束，排名由窗口函数计算）、`duty_templates`、`duty_details`、`import_mappings`（导入习惯记忆），以及 `users`、`committee`（班委）、`timetable`、`timetable_changes`（临时调课）。
+- Username: `admin`
+- Password: `admin123`
 
-### 切换 PostgreSQL
+Change the password after the first login. `ADMIN_USERNAME` and `ADMIN_PASSWORD` in `.env` are only used when the administrator is first created.
 
-编辑 `.env`：
+## Data Storage and Capacity
 
+The default database is `./class_manager.db`. All users, classes, semesters, students, seating versions, exams, scores, duties, contacts, and timetables are stored there. Mapping preferences are stored in the `import_mappings` table, and automatic backups are written to `./backup`.
+
+The application does not impose a fixed row-count limit on normal business data. Practical SQLite capacity depends on available disk space and hardware and is more than sufficient for typical private classroom use. PostgreSQL is recommended if the application later needs many concurrent users, remote access, or substantially larger datasets.
+
+Do not manually edit or delete `class_manager.db` while the service is running.
+
+## Import Workflow
+
+Student rosters, exam scores, and timetables use a preview-first import process:
+
+1. Upload and parse: the server parses `.xlsx`, `.xls`, `.docx`, or `.pdf` content and returns a preview without writing to the database.
+2. Map fields: map source columns to system fields or choose “Ignore this column.” The latest mapping for matching headers is restored automatically.
+3. Preview and validate: review all parsed rows, student matching, conflicts, score ranges, and foreign-language splitting.
+4. Confirm: after explicit confirmation, the import is committed in one transaction. Any error rolls the entire operation back.
+
+Exam imports support both an existing exam and a new exam. A new exam requires a manually entered exam name and actual exam date; the upload date is never used as the exam date.
+
+Student numbers are unique within a class. Duplicate student names are allowed because internal relationships use student IDs. Importing a previously soft-deleted student number restores that student instead of creating an invalid duplicate.
+
+## Configuration
+
+Copy `.env.example` to `.env` and adjust values as needed:
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `DATABASE_URL` | `sqlite:///./class_manager.db` | SQLAlchemy database connection |
+| `ENCRYPTION_KEY` | generated automatically | Fernet key for encrypted guardian phone numbers |
+| `ADMIN_USERNAME` | `admin` | Initial administrator username |
+| `ADMIN_PASSWORD` | `admin123` | Initial administrator password |
+| `HOST` | `0.0.0.0` | Server bind address |
+| `PORT` | `8000` | Server port |
+| `CORS_ORIGINS` | empty | Comma-separated origins for a separate frontend |
+| `BACKUP_DIR` | `./backup` | Backup destination |
+| `BACKUP_HOUR` | `2` | Daily backup hour |
+| `BACKUP_MINUTE` | `0` | Daily backup minute |
+| `BACKUP_KEEP_COUNT` | `30` | Number of backups retained |
+| `LOG_FILE` | `./server.log` | Runtime log file |
+| `LOG_MAX_BYTES` | `5242880` | Maximum size of one log file |
+| `LOG_BACKUP_COUNT` | `5` | Number of rotated log files retained |
+
+Keep `ENCRYPTION_KEY` unchanged when restoring a backup or moving the application to another computer. A different key makes existing encrypted phone numbers unreadable.
+
+## Database Initialization and Migration
+
+On startup, the application automatically:
+
+1. creates missing tables and indexes;
+2. applies compatible schema migrations;
+3. creates the initial administrator if needed;
+4. adds demonstration data only when no classes exist;
+5. runs a SQLite `quick_check` before accepting requests;
+6. creates an immediate backup and schedules the daily backup job.
+
+There are 14 ORM tables: `users`, `classes`, `students`, `semesters`, `seat_plans`, `seat_details`, `exam_records`, `scores`, `duty_templates`, `duty_details`, `import_mappings`, `committee`, `timetable`, and `timetable_changes`.
+
+### PostgreSQL
+
+Set the connection in `.env`:
+
+```dotenv
+DATABASE_URL=postgresql+psycopg2://postgres:your_password@localhost:5432/class_manager
 ```
-DATABASE_URL=postgresql+psycopg2://postgres:你的密码@localhost:5432/class_manager
-```
 
-安装驱动 `pip install psycopg2-binary` 后启动即可（首次启动自动建表）。PostgreSQL 模式会生成数据 INSERT 脚本；正式部署仍建议同时使用 `pg_dump`。SQLite 模式使用 Online Backup API，能正确包含 WAL 中已提交的数据。
+Install the driver with `python -m pip install psycopg2-binary`. The built-in PostgreSQL backup writes portable SQL `INSERT` statements. For production installations, use `pg_dump` as an additional backup layer.
 
-### 备份与恢复
+## Backup and Recovery
 
-- **备份**：启动时及每日凌晨 2:00 自动备份到 `./backup/`（SQLite 模式为 `backup_YYYYMMDD_HHMMSS.db` 文件），每次执行完整性校验；可修改 `.env` 中 `BACKUP_HOUR/BACKUP_MINUTE/BACKUP_KEEP_COUNT`。
-- **恢复**：关闭服务 → 将备份文件复制覆盖 `class_manager.db` → 重启。**注意**：`.env` 中的 `ENCRYPTION_KEY` 必须保持不变，否则备份中的监护人手机号无法解密。
-- **运行日志**：默认写入 `./server.log` 并自动轮转（单文件 5MB、保留 5 份），可通过 `LOG_FILE/LOG_MAX_BYTES/LOG_BACKUP_COUNT` 调整。
-- **启动自检**：启动时执行 SQLite `quick_check`；健康接口 `/api/health` 同时验证数据库连接，数据库不可用时返回 HTTP 503。
+- SQLite backups use the SQLite Online Backup API, include committed WAL data, and are integrity-checked before being accepted.
+- A backup is created at startup and then at the configured daily time.
+- Old backups are removed after `BACKUP_KEEP_COUNT` is reached.
+- Runtime logs rotate automatically to avoid unlimited growth.
 
-## 目录结构
+To restore SQLite:
 
-```
-班主任管理系统/
-├── main.py                 # FastAPI 入口（python main.py 启动）
+1. Stop the server with `关闭班主任工作台.bat`.
+2. Make a safety copy of the current `class_manager.db` and `.env`.
+3. Copy the selected backup over `class_manager.db`.
+4. Keep the original `ENCRYPTION_KEY` in `.env`.
+5. Restart the application and verify `/api/health`.
+
+## Project Structure
+
+```text
+classruler-workbench/
+├── main.py                         # FastAPI entry point
+├── desktop_launcher.py             # Windows background launcher
+├── 启动班主任工作台.bat              # One-click start
+├── 关闭班主任工作台.bat              # One-click stop
+├── README.md                       # English documentation
+├── README-CN.md                    # Chinese documentation
 ├── requirements.txt
-├── .env.example            # 环境变量示例（复制为 .env）
-├── README.md
+├── requirements-dev.txt
+├── .env.example
 ├── app/
-│   ├── config.py           # 配置（数据库/密钥/备份时间）
-│   ├── database.py         # SQLAlchemy 引擎与会话
-│   ├── models.py           # ORM 模型（14 张表）
-│   ├── init_db.py          # 建表 + 种子数据
-│   ├── security.py         # 密码哈希 / 手机号加密 / Token
-│   ├── deps.py             # 登录与参数校验依赖
-│   ├── exceptions.py       # 全局异常拦截（统一 {code,message,data}）
-│   ├── tasks.py            # 每日自动备份调度
-│   ├── utils/
-│   │   ├── file_parser.py  # xlsx/docx/pdf 解析 → 二维数组（解析与入库分离）
-│   │   └── excel_export.py # Excel 导出（中文表头）
-│   └── routers/            # 10 组 API 路由（auth/classes/students/seats/duty/
-│                           #   exams/committee/parents/timetable/imports）
+│   ├── config.py                   # Environment configuration
+│   ├── database.py                 # Database engine and sessions
+│   ├── models.py                   # ORM models
+│   ├── init_db.py                  # Initialization, migration, and seed data
+│   ├── security.py                 # Authentication and encryption
+│   ├── tasks.py                    # Backup scheduler
+│   ├── utils/                      # File parsing and Excel export
+│   └── routers/                    # API routes
 ├── static/
-│   ├── index.html          # SPA 入口（依赖位于 static/vendor）
+│   ├── index.html                  # SPA entry point
 │   ├── css/app.css
-│   └── js/                 # api.js / store.js / 通用 ImportModal / 10 个页面视图
-├── backup/                 # 每日自动备份输出目录
-└── uploads/                # 上传临时目录
+│   ├── js/                         # Store, components, and page views
+│   └── vendor/                     # Local frontend dependencies
+├── scripts/stop_workbench.ps1      # Verified process shutdown
+├── backup/                         # Automatic backups
+├── uploads/                        # Reserved upload workspace
+└── tests/                           # Regression tests
 ```
 
-## 导入三步走（所有模块通用）
+## API Conventions
 
-1. **上传解析**：`POST /api/import/upload` → 后端解析（pandas/xlsx、python-docx、pypdf）返回前 10 行预览 + `file_id`，**不写库**
-2. **字段映射**：前端左侧文件列名 → 右侧系统字段下拉（含「忽略此列」）；按文件 MD5 记忆上次映射习惯；Word/PDF 支持正则预筛（如 `姓名：张三`）
-3. **预览确认**：完整数据分页预览 → 冲突检测（学号/姓名已存在，逐行选择 覆盖/跳过）→ 勾选「我已核对数据无误」→ `POST /api/import/confirm` 事务入库，任一失败整体回滚并返回具体行号
+- Interactive API documentation: `http://127.0.0.1:8000/docs`
+- Authentication: `Authorization: Bearer <token>`
+- Success response: `{"code": 0, "message": "ok", "data": ...}`
+- Non-zero `code` values indicate errors.
+- Common HTTP status codes: `400` business validation, `401` unauthenticated, `404` not found, `405` wrong HTTP method, `422` invalid request data, and `500` server error.
 
-## 常见问题
-
-| 问题 | 解决 |
-|---|---|
-| 启动报 numpy/pandas 兼容错误（Anaconda 环境） | `pip install -U numexpr bottleneck` 或 `pip install "numpy<2"` |
-| 页面加载慢/白屏 | 检查 `static/vendor` 是否完整，并查看浏览器控制台与服务端日志 |
-| 监护人手机号无法解密 | `.env` 中 `ENCRYPTION_KEY` 与备份时不一致，请保持一致 |
-| 忘记密码 | 删除 `class_manager.db` 重新初始化（会丢失数据），或改用 `init_db` 重置 admin 密码 |
-
-## 开发验证
+## Development and Verification
 
 ```bash
-pip install -r requirements-dev.txt
+python -m pip install -r requirements-dev.txt
 pytest -q
 ```
 
-`.env`、数据库、备份、上传文件和日志均属于本地敏感运行数据，不应提交到版本库。
+The regression suite covers score bounds and decimals, transactional imports, mapping recall, student restoration, class/semester deletion, profile updates, personal score history, seating dimensions, backup integrity, and related behavior.
 
-## API 约定
+## Troubleshooting
 
-- 认证：`Authorization: Bearer <token>`（登录接口返回，7 天有效）
-- 统一响应：`{"code": 0, "message": "ok", "data": {...}}`，`code != 0` 表示失败
-- 错误码：400 业务错误、401 未登录、404 不存在、422 参数校验、500 服务器错误
+| Problem | Resolution |
+|---|---|
+| One-click launcher does not open the page | Check `server.launch.err.log`, verify Python 3.9+, and run `python -m pip install -r requirements.txt` |
+| `405 Method Not Allowed` | The browser called an endpoint with the wrong HTTP method or an older server is still running. Stop and restart the workbench, then hard-refresh the page |
+| `database is locked` | Avoid running multiple manual server processes. Use the one-click launcher, which detects an existing service |
+| Student could not be matched during score import | Confirm that the selected class is correct and that the source student number/name matches the current roster |
+| Anaconda reports NumPy/pandas compatibility errors | Run `python -m pip install -U numexpr bottleneck` or use a clean virtual environment |
+| Guardian phone numbers cannot be decrypted | Restore the original `ENCRYPTION_KEY` from the `.env` used when the data was created |
+| The page is blank or slow | Check `static/vendor`, the browser console, `server.log`, and `server.launch.err.log` |
+
+`.env`, database files, backups, uploads, PID files, and logs contain local or sensitive runtime data and should not be committed to version control.
