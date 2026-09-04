@@ -39,6 +39,7 @@ def _gen_names(count):
 
 def init_db(force_seed: bool = False) -> None:
     Base.metadata.create_all(bind=engine)
+    _migrate_seat_plan_dimensions()
     _migrate_student_unique_index()
     _migrate_score_type()
     db = SessionLocal()
@@ -60,6 +61,33 @@ def init_db(force_seed: bool = False) -> None:
         logger.info("种子数据初始化完成")
     finally:
         db.close()
+
+
+def _migrate_seat_plan_dimensions() -> None:
+    """旧版座次只保存有人座位；增加行列数后，空行空列也能跨重启保留。"""
+    dialect = engine.dialect.name
+    with engine.begin() as conn:
+        if dialect == "sqlite":
+            columns = {
+                row[1] for row in conn.execute(text("PRAGMA table_info(seat_plans)"))
+            }
+            if "rows" not in columns:
+                conn.execute(text(
+                    "ALTER TABLE seat_plans ADD COLUMN rows INTEGER NOT NULL DEFAULT 0"
+                ))
+            if "cols" not in columns:
+                conn.execute(text(
+                    "ALTER TABLE seat_plans ADD COLUMN cols INTEGER NOT NULL DEFAULT 0"
+                ))
+        elif dialect == "postgresql":
+            conn.execute(text(
+                "ALTER TABLE seat_plans ADD COLUMN IF NOT EXISTS "
+                "rows INTEGER NOT NULL DEFAULT 0"
+            ))
+            conn.execute(text(
+                "ALTER TABLE seat_plans ADD COLUMN IF NOT EXISTS "
+                "cols INTEGER NOT NULL DEFAULT 0"
+            ))
 
 
 def _migrate_student_unique_index() -> None:
@@ -159,7 +187,8 @@ def _seed_rich_demo(db: Session, cls: Class, students) -> None:
 
     # ---------- 座次（8列 x 4行，30 名学生） ----------
     plan = SeatPlan(class_id=cls.id, semester_id=semester.id,
-                    effective_date=date(2024, 9, 1), remark="开学初排布")
+                    effective_date=date(2024, 9, 1), remark="开学初排布",
+                    rows=4, cols=8)
     db.add(plan)
     db.flush()
     for i, stu in enumerate(students[:30]):

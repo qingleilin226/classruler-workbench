@@ -52,6 +52,9 @@
           if (!this.currentSemesterId && cls) {
             this.currentSemesterId = cls.active_semester_id;
           }
+        } else {
+          this.semesters = [];
+          this.currentSemesterId = null;
         }
         this.persist();
       },
@@ -85,7 +88,9 @@
 
       persist() {
         if (this.currentClassId) localStorage.setItem(CLASS_KEY, String(this.currentClassId));
+        else localStorage.removeItem(CLASS_KEY);
         if (this.currentSemesterId) localStorage.setItem(SEMESTER_KEY, String(this.currentSemesterId));
+        else localStorage.removeItem(SEMESTER_KEY);
       },
 
       async logout() {

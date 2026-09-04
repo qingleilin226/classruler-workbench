@@ -168,7 +168,9 @@ html, body, #app {
 }
 
 .seat-cell {
+  position: relative;
   min-width: 76px;
+  min-height: 52px;
   padding: 8px 6px;
   border-radius: 8px;
   background: #fff;
@@ -185,7 +187,7 @@ html, body, #app {
 .seat-cell.empty {
   background: repeating-linear-gradient(45deg, #f4f6fa, #f4f6fa 6px, #eceff5 6px, #eceff5 12px);
   border-style: dashed;
-  cursor: default;
+  cursor: pointer;
 }
 
 .seat-cell .s-name { font-weight: 600; font-size: 13px; }

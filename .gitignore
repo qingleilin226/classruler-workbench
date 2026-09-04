@@ -16,6 +16,7 @@ htmlcov/
 backup/
 uploads/
 server*.log*
+.workbench.pid
 
 # Editor and OS noise
 .idea/

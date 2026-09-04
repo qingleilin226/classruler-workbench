@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """认证：登录、当前用户、修改密码、验证密码（查看隐私用）。"""
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -27,6 +27,10 @@ class VerifyPwdIn(BaseModel):
     password: str
 
 
+class ProfileIn(BaseModel):
+    display_name: str = Field(min_length=1, max_length=64)
+
+
 @router.post("/login")
 def login(body: LoginIn, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == body.username).first()
@@ -40,6 +44,18 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
 def me(user: User = Depends(get_current_user)):
     return ok({"id": user.id, "username": user.username,
                "display_name": user.display_name})
+
+
+@router.put("/profile")
+def update_profile(body: ProfileIn, user: User = Depends(get_current_user),
+                   db: Session = Depends(get_db)):
+    display_name = body.display_name.strip()
+    if not display_name:
+        raise BizError("用户名称不能为空")
+    user.display_name = display_name
+    db.commit()
+    return ok({"id": user.id, "username": user.username,
+               "display_name": user.display_name}, message="用户名称已更新")
 
 
 @router.post("/change-password")

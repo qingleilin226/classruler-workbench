@@ -97,6 +97,8 @@ class SeatPlan(Base, TimestampMixin):
     semester_id = Column(Integer, ForeignKey("semesters.id"), nullable=False, index=True)
     effective_date = Column(Date, nullable=False, default=date.today)
     remark = Column(String(255), nullable=True)               # 如 "期中后排布"
+    rows = Column(Integer, nullable=False, default=0)          # 保留空行，支持页面手工编辑版式
+    cols = Column(Integer, nullable=False, default=0)          # 保留空列，支持页面手工编辑版式
     is_deleted = Column(Boolean, default=False, nullable=False)
 
     details = relationship("SeatDetail", back_populates="plan")

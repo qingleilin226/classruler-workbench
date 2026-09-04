@@ -10,8 +10,10 @@ from app.database import Base
 from app.exceptions import BizError
 from app.models import (
     Class, DutyDetail, DutyTemplate, ExamRecord, Score, Semester, Student,
-    TimetableCell, User,
+    SeatPlan, TimetableCell, User,
 )
+from app.routers.auth import ProfileIn, update_profile
+from app.routers.classes import delete_class, delete_semester
 from app.routers.duty import _week_view
 from app.routers.exams import (
     ScoreIn, ScoreItem, add_scores, exam_analysis, student_score_history,
@@ -20,6 +22,7 @@ from app.routers.imports import (
     MappingRecallIn, _confirm_exam_scores, _confirm_students, _preview_exam_scores,
     recall_mapping, save_mapping,
 )
+from app.routers.seats import SeatGridIn, _build_grid, save_seat_plan
 from app.routers.timetable import ImportTimetableIn, import_timetable
 from app.security import create_token, parse_token, password_version
 from app.tasks import _backup_sqlite
@@ -81,6 +84,70 @@ def test_password_change_invalidates_old_token():
     payload = parse_token(token)
     assert payload["pwdv"] == password_version("old-password-hash")
     assert payload["pwdv"] != password_version("new-password-hash")
+
+
+def test_user_can_update_display_name(db):
+    user = User(username="profile-user", password_hash="unused", display_name="系统管理员")
+    db.add(user)
+    db.commit()
+
+    response = update_profile(ProfileIn(display_name="  张老师  "), user=user, db=db)
+
+    assert response["data"]["display_name"] == "张老师"
+    assert db.get(User, user.id).display_name == "张老师"
+
+
+def test_delete_active_semester_activates_latest_remaining_semester(db):
+    cls, first = _class_with_semester(db, "学期删除班")
+    second = Semester(
+        class_id=cls.id,
+        name="第二学期",
+        start_date=date(2027, 2, 10),
+        end_date=date(2027, 7, 5),
+        is_active=False,
+    )
+    db.add(second)
+    db.commit()
+
+    response = delete_semester(cls.id, first.id, user=None, db=db)
+
+    assert db.get(Semester, first.id).is_deleted is True
+    assert db.get(Semester, first.id).is_active is False
+    assert db.get(Semester, second.id).is_active is True
+    assert response["data"]["replacement_semester_id"] == second.id
+
+
+def test_delete_class_hides_class_but_retains_children(db):
+    cls, semester = _class_with_semester(db, "班级删除测试")
+    student = Student(class_id=cls.id, name="保留学生", gender="男", student_no="D001")
+    db.add(student)
+    db.commit()
+
+    delete_class(cls.id, user=None, db=db)
+
+    assert db.get(Class, cls.id).is_deleted is True
+    assert db.get(Semester, semester.id).is_deleted is False
+    assert db.get(Semester, semester.id).is_active is False
+    assert db.get(Student, student.id).is_deleted is False
+
+
+def test_manual_seat_plan_preserves_empty_rows_and_columns(db):
+    cls, semester = _class_with_semester(db, "手工座次班")
+    student = Student(class_id=cls.id, name="座次学生", gender="女", student_no="S001")
+    db.add(student)
+    db.commit()
+
+    response = save_seat_plan(SeatGridIn(
+        class_id=cls.id,
+        semester_id=semester.id,
+        grid=[[student.id, None, None], [None, None, None]],
+        remark="手工调整",
+    ), user=None, db=db)
+    plan = db.get(SeatPlan, response["data"]["plan_id"])
+    rebuilt = _build_grid(plan)
+
+    assert (plan.rows, plan.cols) == (2, 3)
+    assert rebuilt["grid"] == [[student.id, None, None], [None, None, None]]
 
 
 def test_score_rejects_student_from_another_class(db):

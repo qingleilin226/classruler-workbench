@@ -14,6 +14,8 @@
       const semesterForm = reactive({ class_id: null, name: "", start_date: "", end_date: "", is_active: false });
       const pwdDialog = ref(false);
       const pwdForm = reactive({ old_password: "", new_password: "" });
+      const profileDialog = ref(false);
+      const profileForm = reactive({ display_name: "" });
       const saving = ref(false);
 
       async function addClass() {
@@ -62,6 +64,50 @@
         await store.loadSemesters();
       }
 
+      async function deleteClass(row) {
+        try {
+          await ElMessageBox.confirm(
+            `确定删除班级「${row.name}」吗？该班级将从工作台隐藏，学生和历史数据仍会保留。`,
+            "删除班级", { type: "warning", confirmButtonText: "删除" });
+        } catch (e) { return; }
+        await window.api.del(`/api/classes/${row.id}`);
+        ElMessage.success("班级已删除");
+        await store.loadClasses();
+      }
+
+      async function deleteSemester(row) {
+        try {
+          await ElMessageBox.confirm(
+            `确定删除学期「${row.name}」吗？该学期将被隐藏，关联的考试、座次和课表历史仍会保留。`,
+            "删除学期", { type: "warning", confirmButtonText: "删除" });
+        } catch (e) { return; }
+        await window.api.del(`/api/classes/${store.currentClassId}/semesters/${row.id}`);
+        ElMessage.success("学期已删除");
+        await store.loadClasses();
+      }
+
+      function openProfileDialog() {
+        profileForm.display_name = store.user?.display_name || "";
+        profileDialog.value = true;
+      }
+
+      async function updateProfile() {
+        const displayName = profileForm.display_name.trim();
+        if (!displayName) {
+          ElMessage.warning("用户名称不能为空");
+          return;
+        }
+        saving.value = true;
+        try {
+          const user = await window.api.put("/api/auth/profile", { display_name: displayName });
+          store.user = user;
+          profileDialog.value = false;
+          ElMessage.success("用户名称已修改");
+        } finally {
+          saving.value = false;
+        }
+      }
+
       async function changePassword() {
         if (!pwdForm.old_password || !pwdForm.new_password) {
           ElMessage.warning("请填写原密码和新密码");
@@ -86,8 +132,9 @@
       onMounted(() => { store.loadClasses(); });
 
       return { store, classDialog, classForm, semesterDialog, semesterForm, pwdDialog,
-               pwdForm, saving, addClass, openSemesterDialog, addSemester, activateSemester,
-               changePassword };
+               pwdForm, profileDialog, profileForm, saving, addClass, openSemesterDialog,
+               addSemester, activateSemester, deleteClass, deleteSemester,
+               openProfileDialog, updateProfile, changePassword };
     },
     template: `
     <div>
@@ -108,9 +155,10 @@
               <el-tag v-if="store.currentClassId === row.id" type="success" size="small">工作台当前班级</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="110" align="center">
+          <el-table-column label="操作" width="180" align="center">
             <template #default="{ row }">
               <el-button link type="primary" @click="store.switchClass(row.id)">切换使用</el-button>
+              <el-button link type="danger" @click="deleteClass(row)">删除</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -133,10 +181,11 @@
               <el-tag v-else type="info" size="small">未激活</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="130" align="center">
+          <el-table-column label="操作" width="180" align="center">
             <template #default="{ row }">
               <el-button v-if="!row.is_active" link type="primary"
                          @click="activateSemester(row)">设为激活</el-button>
+              <el-button link type="danger" @click="deleteSemester(row)">删除</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -149,6 +198,7 @@
       <div class="page-card">
         <div style="font-weight:600;font-size:15px;margin-bottom:12px">账号与数据安全</div>
         <div style="display:flex;gap:12px;align-items:center">
+          <el-button :icon="'User'" @click="openProfileDialog">修改用户名称</el-button>
           <el-button :icon="'Lock'" @click="pwdDialog = true">修改登录密码</el-button>
           <span style="color:#7a8194;font-size:13px">
             当前账号：{{ store.user?.username }}（{{ store.user?.display_name }}）
@@ -187,6 +237,23 @@
         <template #footer>
           <el-button @click="semesterDialog = false">取消</el-button>
           <el-button type="primary" :loading="saving" @click="addSemester">创建</el-button>
+        </template>
+      </el-dialog>
+
+      <!-- 修改用户显示名称 -->
+      <el-dialog v-model="profileDialog" title="修改用户名称" width="420px">
+        <el-form label-width="90px">
+          <el-form-item label="登录账号">
+            <el-input :model-value="store.user?.username" disabled />
+          </el-form-item>
+          <el-form-item label="显示名称" required>
+            <el-input v-model="profileForm.display_name" maxlength="64" show-word-limit
+                      placeholder="例如：张老师" @keyup.enter="updateProfile" />
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="profileDialog = false">取消</el-button>
+          <el-button type="primary" :loading="saving" @click="updateProfile">保存</el-button>
         </template>
       </el-dialog>
 

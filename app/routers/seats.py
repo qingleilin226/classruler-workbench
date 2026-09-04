@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """座次表：网格读取、拖拽后保存为新版本（不覆盖历史）、历史版本列表。"""
 from datetime import date
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
@@ -15,18 +16,21 @@ from ..utils.excel_export import export_excel
 
 router = APIRouter(prefix="/api/seats", tags=["座次表"])
 
+MAX_SEAT_ROWS = 30
+MAX_SEAT_COLS = 20
+
 
 class SeatGridIn(BaseModel):
     class_id: int
     semester_id: int
-    grid: list            # 二维数组 [[student_id|null, ...], ...]
+    grid: list[list[Optional[int]]]  # 二维数组 [[student_id|null, ...], ...]
     remark: str = ""
 
 
 def _build_grid(plan: SeatPlan) -> dict:
     details = plan.details
-    rows = max([d.row for d in details] or [0])
-    cols = max([d.col for d in details] or [0])
+    rows = max([d.row for d in details] + [plan.rows or 0])
+    cols = max([d.col for d in details] + [plan.cols or 0])
     grid = [[None for _ in range(cols)] for _ in range(rows)]
     stu_names = {}
     for d in details:
@@ -95,6 +99,15 @@ def save_seat_plan(body: SeatGridIn, user: User = Depends(get_current_user),
     get_class(db, body.class_id)
     require_semester(db, body.semester_id, body.class_id)
 
+    rows = len(body.grid)
+    cols = max((len(row) for row in body.grid), default=0)
+    if rows < 1 or cols < 1:
+        raise BizError("座次表至少需要 1 排 1 列")
+    if rows > MAX_SEAT_ROWS or cols > MAX_SEAT_COLS:
+        raise BizError(f"座次表最多支持 {MAX_SEAT_ROWS} 排、{MAX_SEAT_COLS} 列")
+    if any(len(row) != cols for row in body.grid):
+        raise BizError("座次表每一排的列数必须一致")
+
     flat = [(int(r), int(c), sid) for r, row in enumerate(body.grid, start=1)
             for c, sid in enumerate(row, start=1) if sid is not None]
 
@@ -107,7 +120,8 @@ def save_seat_plan(body: SeatGridIn, user: User = Depends(get_current_user),
         require_student(db, sid, body.class_id)
 
     plan = SeatPlan(class_id=body.class_id, semester_id=body.semester_id,
-                    effective_date=date.today(), remark=body.remark or "")
+                    effective_date=date.today(), remark=body.remark or "",
+                    rows=rows, cols=cols)
     db.add(plan)
     db.flush()
     for r, c, sid in flat:

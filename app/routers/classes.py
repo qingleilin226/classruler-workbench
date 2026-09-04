@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..deps import get_current_user
+from ..deps import get_class, get_current_user
 from ..exceptions import BizError, ok
 from ..models import Class, Semester, User
 
@@ -48,6 +48,7 @@ def list_classes(user: User = Depends(get_current_user), db: Session = Depends(g
 @router.get("/{class_id}/semesters")
 def list_semesters(class_id: int, user: User = Depends(get_current_user),
                    db: Session = Depends(get_db)):
+    get_class(db, class_id)
     sems = db.query(Semester).filter(
         Semester.class_id == class_id, Semester.is_deleted.is_(False)
     ).order_by(Semester.start_date).all()
@@ -59,6 +60,7 @@ def list_semesters(class_id: int, user: User = Depends(get_current_user),
 def activate_semester(class_id: int, payload: dict, user: User = Depends(get_current_user),
                       db: Session = Depends(get_db)):
     """切换激活学期：先把同班其他学期置为非激活，再激活目标学期（部分唯一索引兜底）。"""
+    get_class(db, class_id)
     semester_id = payload.get("semester_id")
     if not semester_id:
         raise BizError("缺少 semester_id")
@@ -77,6 +79,7 @@ def activate_semester(class_id: int, payload: dict, user: User = Depends(get_cur
 @router.post("/semesters")
 def create_semester(body: SemesterIn, user: User = Depends(get_current_user),
                     db: Session = Depends(get_db)):
+    get_class(db, body.class_id)
     if body.end_date < body.start_date:
         raise BizError("结束日期不能早于开始日期")
     if db.query(Semester).filter(Semester.class_id == body.class_id,
@@ -92,6 +95,35 @@ def create_semester(body: SemesterIn, user: User = Depends(get_current_user),
     return ok({"id": sem.id}, message="学期创建成功")
 
 
+@router.delete("/{class_id}/semesters/{semester_id}")
+def delete_semester(class_id: int, semester_id: int,
+                    user: User = Depends(get_current_user),
+                    db: Session = Depends(get_db)):
+    get_class(db, class_id)
+    sem = db.query(Semester).filter(
+        Semester.id == semester_id,
+        Semester.class_id == class_id,
+        Semester.is_deleted.is_(False),
+    ).first()
+    if not sem:
+        raise BizError("学期不存在或已删除", code=404)
+    was_active = sem.is_active
+    sem.is_active = False
+    sem.is_deleted = True
+    replacement = None
+    if was_active:
+        replacement = db.query(Semester).filter(
+            Semester.class_id == class_id,
+            Semester.id != semester_id,
+            Semester.is_deleted.is_(False),
+        ).order_by(Semester.start_date.desc(), Semester.id.desc()).first()
+        if replacement:
+            replacement.is_active = True
+    db.commit()
+    return ok({"replacement_semester_id": replacement.id if replacement else None},
+              message="学期已删除，关联历史数据仍安全保留")
+
+
 @router.post("")
 def create_class(body: ClassIn, user: User = Depends(get_current_user),
                  db: Session = Depends(get_db)):
@@ -99,7 +131,7 @@ def create_class(body: ClassIn, user: User = Depends(get_current_user),
         raise BizError("班级名称已存在")
     cls = Class(**body.model_dump())
     db.add(cls)
-    db.commit()
+    db.flush()
     # 自动创建默认两个学期
     year_start = 2024
     try:
@@ -116,3 +148,20 @@ def create_class(body: ClassIn, user: User = Depends(get_current_user),
     ])
     db.commit()
     return ok({"id": cls.id}, message="班级创建成功，已自动生成两个学期")
+
+
+@router.delete("/{class_id}")
+def delete_class(class_id: int, user: User = Depends(get_current_user),
+                 db: Session = Depends(get_db)):
+    cls = db.query(Class).filter(
+        Class.id == class_id, Class.is_deleted.is_(False),
+    ).first()
+    if not cls:
+        raise BizError("班级不存在或已删除", code=404)
+    cls.is_deleted = True
+    db.query(Semester).filter(
+        Semester.class_id == class_id,
+        Semester.is_active.is_(True),
+    ).update({"is_active": False}, synchronize_session=False)
+    db.commit()
+    return ok(message="班级已删除，学生和历史业务数据仍安全保留")
