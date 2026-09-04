@@ -3,6 +3,7 @@
 import logging
 from datetime import date, timedelta
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from .config import ADMIN_PASSWORD, ADMIN_USERNAME
@@ -38,6 +39,8 @@ def _gen_names(count):
 
 def init_db(force_seed: bool = False) -> None:
     Base.metadata.create_all(bind=engine)
+    _migrate_student_unique_index()
+    _migrate_score_type()
     db = SessionLocal()
     try:
         # 管理员
@@ -57,6 +60,52 @@ def init_db(force_seed: bool = False) -> None:
         logger.info("种子数据初始化完成")
     finally:
         db.close()
+
+
+def _migrate_student_unique_index() -> None:
+    """把旧版全量唯一索引升级为仅约束未删除学生的部分唯一索引。"""
+    dialect = engine.dialect.name
+    with engine.begin() as conn:
+        if dialect == "sqlite":
+            row = conn.execute(text(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name='uq_student_no'"
+            )).fetchone()
+            definition = (row[0] or "") if row else ""
+            if row and " WHERE " not in definition.upper():
+                conn.execute(text("DROP INDEX uq_student_no"))
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX uq_student_no "
+                    "ON students (class_id, student_no) WHERE is_deleted = 0"
+                ))
+        elif dialect == "postgresql":
+            row = conn.execute(text(
+                "SELECT indexdef FROM pg_indexes "
+                "WHERE schemaname = current_schema() AND indexname = 'uq_student_no'"
+            )).fetchone()
+            definition = (row[0] or "") if row else ""
+            if row and " WHERE " not in definition.upper():
+                conn.execute(text("DROP INDEX uq_student_no"))
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX uq_student_no "
+                    "ON students (class_id, student_no) WHERE is_deleted = false"
+                ))
+
+
+def _migrate_score_type() -> None:
+    """PostgreSQL 旧库把成绩存为整数；升级为双精度以支持小数成绩。"""
+    if engine.dialect.name != "postgresql":
+        return
+    with engine.begin() as conn:
+        row = conn.execute(text(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_schema = current_schema() "
+            "AND table_name = 'scores' AND column_name = 'score'"
+        )).fetchone()
+        if row and row[0] in {"smallint", "integer", "bigint"}:
+            conn.execute(text(
+                "ALTER TABLE scores ALTER COLUMN score TYPE DOUBLE PRECISION "
+                "USING score::double precision"
+            ))
 
 
 def _seed(db: Session) -> None:

@@ -83,11 +83,14 @@ def get_timetable(
         TimetableChange.change_date == the_date, TimetableChange.is_deleted.is_(False)).all()
     applied = []
     for ch in changes:
-        if 1 <= ch.old_weekday <= 7 and 1 <= ch.old_period <= max_period:
+        while len(grid) < max(ch.old_period, ch.new_period):
+            grid.append([{"course": "", "teacher": "", "changed": False, "change": None}
+                         for _ in range(7)])
+        if 1 <= ch.old_weekday <= 7 and 1 <= ch.old_period <= len(grid):
             grid[ch.old_period - 1][ch.old_weekday - 1]["changed"] = True
             grid[ch.old_period - 1][ch.old_weekday - 1]["change"] = {
                 "id": ch.id, "kind": "from", "course": ch.course_name}
-        if 1 <= ch.new_weekday <= 7 and 1 <= ch.new_period <= max_period:
+        if 1 <= ch.new_weekday <= 7 and 1 <= ch.new_period <= len(grid):
             target = grid[ch.new_period - 1][ch.new_weekday - 1]
             target["course"] = ch.course_name
             target["changed"] = True
@@ -95,7 +98,7 @@ def get_timetable(
         applied.append({"id": ch.id, "course_name": ch.course_name,
                          "old": f"{ch.old_weekday}-{ch.old_period}",
                          "new": f"{ch.new_weekday}-{ch.new_period}"})
-    return ok({"grid": grid, "max_period": max_period, "changes": applied,
+    return ok({"grid": grid, "max_period": len(grid), "changes": applied,
                "change_date": str(the_date)})
 
 
@@ -111,9 +114,20 @@ def set_cell(body: CellIn, user: User = Depends(get_current_user),
         cell.course_name = body.course_name
         cell.teacher = body.teacher
     else:
-        db.add(TimetableCell(class_id=body.class_id, semester_id=body.semester_id,
-                             weekday=body.weekday, period=body.period,
-                             course_name=body.course_name, teacher=body.teacher))
+        cell = db.query(TimetableCell).filter(
+            TimetableCell.class_id == body.class_id,
+            TimetableCell.semester_id == body.semester_id,
+            TimetableCell.weekday == body.weekday,
+            TimetableCell.period == body.period,
+        ).first()
+        if cell:
+            cell.course_name = body.course_name
+            cell.teacher = body.teacher
+            cell.is_deleted = False
+        else:
+            db.add(TimetableCell(class_id=body.class_id, semester_id=body.semester_id,
+                                 weekday=body.weekday, period=body.period,
+                                 course_name=body.course_name, teacher=body.teacher))
     db.commit()
     return ok(message="课程已保存")
 
@@ -124,6 +138,12 @@ def adjust(body: AdjustIn, user: User = Depends(get_current_user),
     """临时调课：原位置课程置灰（保留记录），新位置显示课程并标记"调"。"""
     get_class(db, body.class_id)
     require_semester(db, body.semester_id, body.class_id)
+    coords = (body.old_weekday, body.new_weekday, body.old_period, body.new_period)
+    if not (1 <= coords[0] <= 7 and 1 <= coords[1] <= 7
+            and 1 <= coords[2] <= MAX_PERIODS and 1 <= coords[3] <= MAX_PERIODS):
+        raise BizError("调课的星期或节次越界")
+    if (body.old_weekday, body.old_period) == (body.new_weekday, body.new_period):
+        raise BizError("调课目标不能与原位置相同")
     src = _get_cell(db, body.class_id, body.semester_id, body.old_weekday, body.old_period)
     if not src:
         raise BizError("原位置的课程不存在，无法调课")
@@ -137,6 +157,16 @@ def adjust(body: AdjustIn, user: User = Depends(get_current_user),
         TimetableChange.is_deleted.is_(False)).first()
     if dup:
         raise BizError("该节课程今天已有调课记录")
+    target_dup = db.query(TimetableChange).filter(
+        TimetableChange.class_id == body.class_id,
+        TimetableChange.semester_id == body.semester_id,
+        TimetableChange.change_date == (body.change_date or date.today()),
+        TimetableChange.new_weekday == body.new_weekday,
+        TimetableChange.new_period == body.new_period,
+        TimetableChange.is_deleted.is_(False),
+    ).first()
+    if target_dup:
+        raise BizError("目标时段已有其他调课记录")
     ch = TimetableChange(class_id=body.class_id, semester_id=body.semester_id,
                          change_date=body.change_date or date.today(),
                          course_name=course,
@@ -164,29 +194,47 @@ def cancel_change(payload: dict, user: User = Depends(get_current_user),
 def import_timetable(body: ImportTimetableIn, user: User = Depends(get_current_user),
                      db: Session = Depends(get_db)):
     """导入课程表（Excel 合并单元格由前端重构为二维数组后回传），整体覆盖本班课表。"""
+    result = apply_timetable_import(body, db)
+    db.commit()
+    return ok(result, message="课程表导入成功（已整体覆盖并复用已有位置记录）")
+
+
+def apply_timetable_import(body: ImportTimetableIn, db: Session) -> dict:
+    """应用课程表导入但不提交，由调用方控制事务边界。"""
     get_class(db, body.class_id)
     require_semester(db, body.semester_id, body.class_id)
     if not body.matrix:
         raise BizError("课表矩阵为空")
-    # 软删除旧表
-    old = db.query(TimetableCell).filter(
-        TimetableCell.class_id == body.class_id,
-        TimetableCell.semester_id == body.semester_id,
-        TimetableCell.is_deleted.is_(False)).all()
-    for c in old:
-        c.is_deleted = True
-    # 写入新表
+    desired = {}
     for period, row in enumerate(body.matrix, start=1):
+        if period > MAX_PERIODS:
+            raise BizError(f"课程表最多支持 {MAX_PERIODS} 节")
         for col_idx, course in enumerate(row):
             weekday = body.weekday_map.get(str(col_idx))
-            if weekday is None:
+            if weekday is None or not course or not str(course).strip():
                 continue
-            if course and str(course).strip():
-                db.add(TimetableCell(class_id=body.class_id, semester_id=body.semester_id,
-                                     weekday=int(weekday), period=period,
-                                     course_name=str(course).strip()))
-    db.commit()
-    return ok(message="课程表导入成功（已整体覆盖，原表保留软删除痕迹）")
+            weekday = int(weekday)
+            if not 1 <= weekday <= 7:
+                raise BizError("课程表星期映射必须在 1-7 之间")
+            desired[(weekday, period)] = str(course).strip()
+
+    # 唯一约束覆盖全部记录，因此复用同位置旧记录并恢复，其他位置做软删除。
+    old = db.query(TimetableCell).filter(
+        TimetableCell.class_id == body.class_id,
+        TimetableCell.semester_id == body.semester_id).all()
+    for c in old:
+        key = (c.weekday, c.period)
+        if key in desired:
+            c.course_name = desired.pop(key)
+            c.teacher = ""
+            c.is_deleted = False
+        else:
+            c.is_deleted = True
+    for (weekday, period), course in desired.items():
+        db.add(TimetableCell(class_id=body.class_id, semester_id=body.semester_id,
+                             weekday=weekday, period=period, course_name=course))
+    db.flush()
+    return {"updated_cells": len(old), "inserted_cells": len(desired)}
 
 
 @router.get("/export")

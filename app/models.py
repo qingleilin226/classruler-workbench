@@ -4,7 +4,7 @@
 from datetime import date, datetime
 
 from sqlalchemy import (
-    Boolean, Column, Date, DateTime, ForeignKey, Index, Integer, String,
+    Boolean, Column, Date, DateTime, Float, ForeignKey, Index, Integer, String,
     Text, UniqueConstraint, text,
 )
 from sqlalchemy.orm import relationship
@@ -45,7 +45,11 @@ class Class(Base, TimestampMixin):
 class Student(Base, TimestampMixin):
     __tablename__ = "students"
     __table_args__ = (
-        Index("uq_student_no", "class_id", "student_no", unique=True),
+        Index(
+            "uq_student_no", "class_id", "student_no", unique=True,
+            sqlite_where=text("is_deleted = 0"),
+            postgresql_where=text("is_deleted = false"),
+        ),
     )
 
     id = Column(Integer, primary_key=True)
@@ -142,7 +146,7 @@ class Score(Base, TimestampMixin):
     exam_record_id = Column(Integer, ForeignKey("exam_records.id"), nullable=False, index=True)
     student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
     subject = Column(String(32), nullable=False)
-    score = Column(Integer, nullable=False)                   # 分数（整数）
+    score = Column(Float, nullable=False)                     # 成绩/总分/进退（支持小数，-1000~750）
     rank = Column(Integer, nullable=True)                     # 班级排名（窗口函数计算后回写）
     is_deleted = Column(Boolean, default=False, nullable=False)
 

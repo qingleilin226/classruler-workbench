@@ -1,34 +1,41 @@
 # -*- coding: utf-8 -*-
 """成绩分析：考试管理、手动录入、统计看板（均分/最高/及格率 + ECharts 分布 + 明细）、
-排名由数据库窗口函数计算并回写。"""
+排名按科目计算并回写。"""
 from datetime import date
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
-from pydantic import BaseModel
-from sqlalchemy import func
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..deps import get_current_user, get_class, require_semester
+from ..deps import get_current_user, get_class, require_semester, require_student
 from ..exceptions import BizError, ok
-from ..models import ExamRecord, Score, Student, User
+from ..models import ExamRecord, Score, Semester, Student, User
 from ..utils.excel_export import export_excel
 
 router = APIRouter(prefix="/api/exams", tags=["成绩分析"])
+MIN_SCORE = -1000
+MAX_SCORE = 750
 
 
 class ExamIn(BaseModel):
     class_id: int
     semester_id: int
     name: str
-    exam_date: date = None
-    subjects: list = []
+    exam_date: date
+    subjects: list = Field(default_factory=list)
+
+
+class ScoreItem(BaseModel):
+    student_id: int
+    subject: str = Field(min_length=1, max_length=32)
+    score: float = Field(ge=MIN_SCORE, le=MAX_SCORE)
 
 
 class ScoreIn(BaseModel):
     exam_id: int
-    scores: list   # [{student_id, subject, score}]
+    scores: list[ScoreItem]
 
 
 def _score_to_dict(s: Score) -> dict:
@@ -37,41 +44,127 @@ def _score_to_dict(s: Score) -> dict:
 
 
 def recalc_ranks(db: Session, exam_id: int) -> None:
-    """窗口函数计算班级排名：RANK() OVER (PARTITION BY exam, subject ORDER BY score DESC)"""
-    from sqlalchemy import text
-    sql = text("""
-        SELECT id,
-               RANK() OVER (PARTITION BY exam_record_id, subject ORDER BY score DESC) AS rk
-        FROM scores
-        WHERE exam_record_id = :eid AND is_deleted = 0
-    """)
-    rows = db.execute(sql, {"eid": exam_id}).fetchall()
-    for row in rows:
-        s = db.get(Score, row.id)
-        if s and s.rank != row.rk:
-            s.rank = row.rk
+    """按科目计算并回写并列排名，避免数据库方言相关的布尔 SQL。"""
+    exam = db.query(ExamRecord).filter(ExamRecord.id == exam_id).first()
+    if not exam:
+        return
+    scores = db.query(Score).join(Student, Student.id == Score.student_id).filter(
+        Score.exam_record_id == exam_id,
+        Score.is_deleted.is_(False),
+        Student.class_id == exam.class_id,
+        Student.is_deleted.is_(False),
+    ).order_by(Score.subject, Score.score.desc(), Score.id).all()
+    by_subject = {}
+    for score in scores:
+        by_subject.setdefault(score.subject, []).append(score)
+    for items in by_subject.values():
+        last_score = None
+        last_rank = 0
+        for position, item in enumerate(items, start=1):
+            if item.score != last_score:
+                last_rank = position
+                last_score = item.score
+            item.rank = last_rank
 
 
 @router.get("")
 def list_exams(class_id: int = Query(...), semester_id: int = Query(...),
                user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     get_class(db, class_id)
+    require_semester(db, semester_id, class_id)
     exams = db.query(ExamRecord).filter(
         ExamRecord.class_id == class_id, ExamRecord.semester_id == semester_id,
         ExamRecord.is_deleted.is_(False)
     ).order_by(ExamRecord.exam_date.desc(), ExamRecord.id.desc()).all()
     result = []
     for e in exams:
-        subjects = [s.subject for s in
-                    db.query(Score.subject).filter(Score.exam_record_id == e.id,
-                                                   Score.is_deleted.is_(False))
+        active_scores = db.query(Score).join(
+            Student, Student.id == Score.student_id
+        ).filter(
+            Score.exam_record_id == e.id,
+            Score.is_deleted.is_(False),
+            Student.class_id == e.class_id,
+            Student.is_deleted.is_(False),
+        )
+        subjects = [row[0] for row in active_scores.with_entities(Score.subject)
                     .distinct().order_by(Score.subject).all()]
         result.append({"id": e.id, "name": e.name, "exam_date": str(e.exam_date),
                        "subjects": subjects,
-                       "score_count": db.query(Score).filter(
-                           Score.exam_record_id == e.id,
-                           Score.is_deleted.is_(False)).count()})
+                       "score_count": active_scores.count()})
     return ok(result)
+
+
+@router.get("/student-history")
+def student_score_history(
+    class_id: int = Query(...),
+    student_id: int = Query(...),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """个人成绩分析：返回学生在当前班级全部历史考试中的分数和排名。"""
+    get_class(db, class_id)
+    student = require_student(db, student_id, class_id)
+    exams = db.query(ExamRecord).filter(
+        ExamRecord.class_id == class_id,
+        ExamRecord.is_deleted.is_(False),
+    ).order_by(ExamRecord.exam_date, ExamRecord.id).all()
+
+    exam_ids = [exam.id for exam in exams]
+    scores = []
+    if exam_ids:
+        scores = db.query(Score).filter(
+            Score.student_id == student.id,
+            Score.exam_record_id.in_(exam_ids),
+            Score.is_deleted.is_(False),
+        ).order_by(Score.exam_record_id, Score.id).all()
+
+    score_map = {}
+    subjects = []
+    for score in scores:
+        score_map[(score.exam_record_id, score.subject)] = score
+        if score.subject not in subjects:
+            subjects.append(score.subject)
+
+    semester_ids = {exam.semester_id for exam in exams}
+    semesters = {}
+    if semester_ids:
+        semesters = {
+            semester.id: semester.name
+            for semester in db.query(Semester).filter(
+                Semester.id.in_(semester_ids),
+                Semester.class_id == class_id,
+                Semester.is_deleted.is_(False),
+            ).all()
+        }
+
+    records = []
+    for exam in exams:
+        values = {}
+        for subject in subjects:
+            score = score_map.get((exam.id, subject))
+            if score:
+                values[subject] = {"score": score.score, "rank": score.rank}
+        records.append({
+            "exam_id": exam.id,
+            "exam_name": exam.name,
+            "exam_date": str(exam.exam_date),
+            "semester_id": exam.semester_id,
+            "semester_name": semesters.get(exam.semester_id, ""),
+            "scores": values,
+        })
+
+    return ok({
+        "student": {
+            "id": student.id,
+            "name": student.name,
+            "student_no": student.student_no,
+            "class_id": student.class_id,
+        },
+        "subjects": subjects,
+        "records": records,
+        "exam_count": len(exams),
+        "score_count": len(scores),
+    })
 
 
 @router.post("")
@@ -80,7 +173,7 @@ def create_exam(body: ExamIn, user: User = Depends(get_current_user),
     get_class(db, body.class_id)
     require_semester(db, body.semester_id, body.class_id)
     exam = ExamRecord(class_id=body.class_id, semester_id=body.semester_id,
-                      name=body.name, exam_date=body.exam_date or date.today())
+                      name=body.name, exam_date=body.exam_date)
     db.add(exam)
     db.commit()
     return ok({"id": exam.id}, message=f"考试「{body.name}」已创建")
@@ -97,20 +190,19 @@ def add_scores(body: ScoreIn, user: User = Depends(get_current_user),
     if not body.scores:
         raise BizError("没有要录入的成绩")
     for item in body.scores:
-        sid, subject, score = item.get("student_id"), item.get("subject"), item.get("score")
-        if not all([sid, subject]):
-            raise BizError("成绩记录缺少学生或科目")
-        if not (0 <= score <= 200):
-            raise BizError(f"分数必须在 0-200 之间: {score}")
+        sid, subject, score = item.student_id, item.subject.strip(), item.score
+        require_student(db, sid, exam.class_id)
         exist = db.query(Score).filter(
             Score.exam_record_id == exam.id, Score.student_id == sid,
-            Score.subject == subject, Score.is_deleted.is_(False)).first()
+            Score.subject == subject).first()
         if exist:
             exist.score = score
+            exist.is_deleted = False
         else:
             db.add(Score(exam_record_id=exam.id, student_id=sid,
                          subject=subject, score=score))
-    db.commit()
+    # Session 关闭了 autoflush；排名计算前必须显式 flush，并保持一次原子提交。
+    db.flush()
     recalc_ranks(db, exam.id)
     db.commit()
     return ok(message="成绩录入成功，排名已自动计算")
@@ -119,6 +211,12 @@ def add_scores(body: ScoreIn, user: User = Depends(get_current_user),
 @router.post("/{exam_id}/recalc-rank")
 def recalc_rank_api(exam_id: int, user: User = Depends(get_current_user),
                     db: Session = Depends(get_db)):
+    exam = db.query(ExamRecord).filter(
+        ExamRecord.id == exam_id,
+        ExamRecord.is_deleted.is_(False),
+    ).first()
+    if not exam:
+        raise BizError("考试不存在", code=404)
     recalc_ranks(db, exam_id)
     db.commit()
     return ok(message="排名已重新计算")
@@ -150,14 +248,19 @@ def exam_analysis(
     if not exam:
         raise BizError("考试不存在", code=404)
 
-    q = db.query(Score).filter(Score.exam_record_id == exam_id,
-                               Score.is_deleted.is_(False))
+    q = db.query(Score).join(Student, Student.id == Score.student_id).filter(
+        Score.exam_record_id == exam_id,
+        Score.is_deleted.is_(False),
+        Student.class_id == exam.class_id,
+        Student.is_deleted.is_(False),
+    )
     if subject:
         q = q.filter(Score.subject == subject)
     scores = q.all()
     if not scores:
         return ok({"exam": {"id": exam.id, "name": exam.name}, "subject": subject,
-                   "stats": None, "distribution": [], "detail": []})
+                   "stats": {"avg": None, "max": None, "pass_rate": None, "count": 0},
+                   "distribution": [], "detail": [], "subjects": []})
 
     # ① 统计卡片
     values = [s.score for s in scores]
@@ -178,23 +281,22 @@ def exam_analysis(
     students = db.query(Student).filter(
         Student.class_id == exam.class_id, Student.is_deleted.is_(False)
     ).order_by(Student.student_no).all()
-    subject_list = []
-    for s in db.query(Score.subject).filter(
-            Score.exam_record_id == exam_id, Score.is_deleted.is_(False)
-    ).distinct().order_by(Score.subject).all():
-        subject_list.append(s[0])
+    subject_list = sorted({s.subject for s in scores})
     if subject:
         subject_list = [subject] if subject in subject_list else []
 
-    # 排名实时计算：窗口函数 RANK() OVER (PARTITION BY subject ORDER BY score DESC)
-    from sqlalchemy import text
-    rank_sql = text("""
-        SELECT student_id, subject,
-               RANK() OVER (PARTITION BY subject ORDER BY score DESC) AS rk
-        FROM scores
-        WHERE exam_record_id = :eid AND is_deleted = 0
-    """)
-    rank_map = {(r[0], r[1]): r[2] for r in db.execute(rank_sql, {"eid": exam_id})}
+    # 排名只基于当前仍有效的学生，与统计卡片和明细保持同一口径。
+    rank_map = {}
+    for sub in subject_list:
+        items = sorted((s for s in scores if s.subject == sub),
+                       key=lambda s: (-s.score, s.id))
+        last_score = None
+        last_rank = 0
+        for position, item in enumerate(items, start=1):
+            if item.score != last_score:
+                last_rank = position
+                last_score = item.score
+            rank_map[(item.student_id, sub)] = last_rank
 
     score_map = {(s.student_id, s.subject): s for s in scores}
     detail = []

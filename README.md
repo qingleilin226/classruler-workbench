@@ -24,16 +24,16 @@
 
 ## 技术栈
 
-- **后端**：Python 3.9+ / FastAPI（异步）/ SQLAlchemy 2.0 / 窗口函数（RANK OVER）
-- **数据库**：默认 **SQLite**（零配置、事务一致、外键约束）；`.env` 中可一键切换 **PostgreSQL 15+**
-- **前端**：Vue 3 + Element Plus + Pinia + ECharts + SheetJS(xlsx) + pdf.js，全部 CDN 引入，由 FastAPI 直接托管，**无需安装 Node.js**
+- **后端**：Python 3.9+ / FastAPI / SQLAlchemy；成绩排名采用跨数据库兼容算法
+- **数据库**：默认 **SQLite**（零配置、事务一致、外键约束）；配置驱动后可切换 **PostgreSQL 15+**
+- **前端**：Vue 3 + Element Plus + Pinia + ECharts + SheetJS(xlsx) + pdf.js，依赖已放入 `static/vendor`，由 FastAPI 直接托管，**无需安装 Node.js**
 - **安全**：密码 PBKDF2 哈希；监护人手机号 Fernet 对称加密存储
 - **定时任务**：APScheduler 每日备份
 
 ## 环境要求
 
 - Python 3.9 及以上（Windows / macOS / Linux 均可）
-- 现代浏览器（Chrome / Edge / Safari），首次使用需联网加载 CDN 依赖
+- 现代浏览器（Chrome / Edge / Safari）；前端依赖已本地化，可离线运行
 
 ## 快速启动
 
@@ -79,12 +79,14 @@ python -c "import main; from app.init_db import init_db; init_db(force_seed=True
 DATABASE_URL=postgresql+psycopg2://postgres:你的密码@localhost:5432/class_manager
 ```
 
-安装驱动 `pip install psycopg2-binary` 后启动即可（首次启动自动建表）。备份任务在 PostgreSQL 模式下自动导出为 SQL 脚本（INSERT 语句），在 SQLite 模式下直接复制 .db 文件。
+安装驱动 `pip install psycopg2-binary` 后启动即可（首次启动自动建表）。PostgreSQL 模式会生成数据 INSERT 脚本；正式部署仍建议同时使用 `pg_dump`。SQLite 模式使用 Online Backup API，能正确包含 WAL 中已提交的数据。
 
 ### 备份与恢复
 
-- **备份**：每日凌晨 2:00 自动备份到 `./backup/`（SQLite 模式为 `backup_YYYYMMDD_HHMMSS.db` 文件），保留最近 30 份；可修改 `.env` 中 `BACKUP_HOUR/BACKUP_MINUTE`。
+- **备份**：启动时及每日凌晨 2:00 自动备份到 `./backup/`（SQLite 模式为 `backup_YYYYMMDD_HHMMSS.db` 文件），每次执行完整性校验；可修改 `.env` 中 `BACKUP_HOUR/BACKUP_MINUTE/BACKUP_KEEP_COUNT`。
 - **恢复**：关闭服务 → 将备份文件复制覆盖 `class_manager.db` → 重启。**注意**：`.env` 中的 `ENCRYPTION_KEY` 必须保持不变，否则备份中的监护人手机号无法解密。
+- **运行日志**：默认写入 `./server.log` 并自动轮转（单文件 5MB、保留 5 份），可通过 `LOG_FILE/LOG_MAX_BYTES/LOG_BACKUP_COUNT` 调整。
+- **启动自检**：启动时执行 SQLite `quick_check`；健康接口 `/api/health` 同时验证数据库连接，数据库不可用时返回 HTTP 503。
 
 ## 目录结构
 
@@ -109,7 +111,7 @@ DATABASE_URL=postgresql+psycopg2://postgres:你的密码@localhost:5432/class_ma
 │   └── routers/            # 10 组 API 路由（auth/classes/students/seats/duty/
 │                           #   exams/committee/parents/timetable/imports）
 ├── static/
-│   ├── index.html          # SPA 入口（CDN 依赖）
+│   ├── index.html          # SPA 入口（依赖位于 static/vendor）
 │   ├── css/app.css
 │   └── js/                 # api.js / store.js / 通用 ImportModal / 10 个页面视图
 ├── backup/                 # 每日自动备份输出目录
@@ -127,9 +129,18 @@ DATABASE_URL=postgresql+psycopg2://postgres:你的密码@localhost:5432/class_ma
 | 问题 | 解决 |
 |---|---|
 | 启动报 numpy/pandas 兼容错误（Anaconda 环境） | `pip install -U numexpr bottleneck` 或 `pip install "numpy<2"` |
-| 页面加载慢/白屏 | unpkg CDN 不可达时，将 `static/index.html` 中的 `unpkg.com` 替换为 `cdn.jsdelivr.net` |
+| 页面加载慢/白屏 | 检查 `static/vendor` 是否完整，并查看浏览器控制台与服务端日志 |
 | 监护人手机号无法解密 | `.env` 中 `ENCRYPTION_KEY` 与备份时不一致，请保持一致 |
 | 忘记密码 | 删除 `class_manager.db` 重新初始化（会丢失数据），或改用 `init_db` 重置 admin 密码 |
+
+## 开发验证
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q
+```
+
+`.env`、数据库、备份、上传文件和日志均属于本地敏感运行数据，不应提交到版本库。
 
 ## API 约定
 

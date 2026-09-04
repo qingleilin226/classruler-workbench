@@ -97,6 +97,9 @@
       <!-- 右侧内容区 -->
       <div class="main-area">
         <header class="topbar">
+          <el-select class="mobile-nav" :model-value="currentPath" @change="navigate($event)">
+            <el-option v-for="m in MENUS" :key="m.path" :label="m.label" :value="m.path" />
+          </el-select>
           <span class="page-title">{{ pageTitle }}</span>
           <div class="spacer"></div>
           <!-- 班级/学期切换（核心维度，全局生效） -->

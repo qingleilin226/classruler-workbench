@@ -62,14 +62,23 @@ def _token_hmac(payload_b64: str) -> str:
     return hmac.new(_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
 
 
-def create_token(user_id: int) -> str:
-    payload = {"uid": user_id, "exp": int(time.time()) + _TOKEN_TTL}
+def password_version(password_hash: str) -> str:
+    """生成不可逆的密码版本标记，用于修改密码后立即吊销旧令牌。"""
+    return hmac.new(_SECRET.encode(), password_hash.encode(), hashlib.sha256).hexdigest()[:16]
+
+
+def create_token(user_id: int, password_hash: str) -> str:
+    payload = {
+        "uid": user_id,
+        "pwdv": password_version(password_hash),
+        "exp": int(time.time()) + _TOKEN_TTL,
+    }
     payload_b64 = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
     return f"{payload_b64}.{_token_hmac(payload_b64)}"
 
 
 def parse_token(token: str):
-    """校验令牌，成功返回 user_id，失败返回 None。"""
+    """校验令牌签名和有效期，成功返回载荷，失败返回 None。"""
     try:
         payload_b64, sig = token.split(".")
         if not hmac.compare_digest(_token_hmac(payload_b64), sig):
@@ -77,6 +86,6 @@ def parse_token(token: str):
         payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode()).decode())
         if payload.get("exp", 0) < time.time():
             return None
-        return payload.get("uid")
+        return payload if payload.get("uid") else None
     except Exception:
         return None

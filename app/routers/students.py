@@ -4,12 +4,12 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..deps import get_current_user
+from ..deps import get_current_user, get_class
 from ..exceptions import BizError, ok
 from ..models import Student, User
 from ..security import decrypt_phone, encrypt_phone
@@ -22,9 +22,9 @@ STATUS_LIST = ["在读", "休学", "转学"]
 
 class StudentIn(BaseModel):
     class_id: int
-    name: str
+    name: str = Field(min_length=1, max_length=64)
     gender: str = "男"
-    student_no: str = ""
+    student_no: str = Field(min_length=1, max_length=32)
     birth_date: date = None
     status: str = "在读"
     guardian_name: str = ""
@@ -40,6 +40,21 @@ class StudentUpdate(BaseModel):
     status: str = None
     guardian_name: str = None
     guardian_phone: str = None
+    address: str = None
+
+
+class StudentBatchDelete(BaseModel):
+    ids: list[int]
+
+
+class StudentBatchUpdate(BaseModel):
+    """批量统一赋值。只允许这 5 个字段；不暴露 name/student_no/birth_date
+    （name 是跨模块关联主键、student_no 班内唯一，禁止批量覆盖）。"""
+    ids: list[int]
+    status: str = None
+    gender: str = None
+    guardian_phone: str = None
+    guardian_name: str = None
     address: str = None
 
 
@@ -59,15 +74,26 @@ def _to_dict(stu: Student, mask_phone: bool = False) -> dict:
 
 
 def _check_no_conflict(db: Session, class_id: int, student_no: str, name: str, exclude_id: int = None):
-    """学号在班内唯一；姓名在班内唯一（作为关联主键）。"""
+    """学号在班内唯一；姓名允许重复，跨模块一律使用学生 id 关联。"""
     q = db.query(Student).filter(Student.class_id == class_id,
                                  Student.is_deleted.is_(False))
     if exclude_id:
         q = q.filter(Student.id != exclude_id)
     if student_no and q.filter(Student.student_no == student_no).first():
         raise BizError(f"学号「{student_no}」在本班已存在")
-    if q.filter(Student.name == name).first():
-        raise BizError(f"姓名「{name}」在本班已存在（姓名作为全模块关联主键，必须唯一）")
+
+
+def _fetch_batch_students(db: Session, ids: list[int]) -> list[Student]:
+    """批量操作公共入口：去重 + 空列表报错 + 全部命中（all-or-nothing）。"""
+    ids = list(dict.fromkeys(ids))
+    if not ids:
+        raise BizError("请选择要操作的学生")
+    stus = db.query(Student).filter(Student.id.in_(ids),
+                                    Student.is_deleted.is_(False)).all()
+    if len(stus) != len(ids):
+        missing = [i for i in ids if i not in {s.id for s in stus}]
+        raise BizError(f"部分学生不存在或已删除（id: {missing}），请刷新列表后重试")
+    return stus
 
 
 @router.get("")
@@ -78,6 +104,7 @@ def list_students(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    get_class(db, class_id)
     q = db.query(Student).filter(Student.class_id == class_id,
                                  Student.is_deleted.is_(False))
     if keyword:
@@ -108,14 +135,57 @@ def export_students(
                     headers={"Content-Disposition": "attachment; filename=students.xlsx"})
 
 
+@router.post("/batch-delete")
+def batch_delete_students(body: StudentBatchDelete, user: User = Depends(get_current_user),
+                          db: Session = Depends(get_db)):
+    """批量软删除，与 DELETE /{student_id} 语义一致：置 is_deleted，不清理子表。"""
+    stus = _fetch_batch_students(db, body.ids)
+    for s in stus:
+        s.is_deleted = True
+    db.commit()
+    return ok({"deleted": len(stus)}, message=f"已删除 {len(stus)} 名学生（软删除）")
+
+
+@router.post("/batch-update")
+def batch_update_students(body: StudentBatchUpdate, user: User = Depends(get_current_user),
+                          db: Session = Depends(get_db)):
+    """批量统一赋值（一次一个或多个字段）。电话加密存储；空串表示清空字段。"""
+    data = body.model_dump(exclude={"ids"}, exclude_unset=True)
+    if not data:
+        raise BizError("请提供要批量修改的字段")
+    if "status" in data and data["status"] not in STATUS_LIST:
+        raise BizError("状态只能是 在读/休学/转学")
+    if "gender" in data and data["gender"] not in ("男", "女"):
+        raise BizError("性别只能是 男/女")
+    stus = _fetch_batch_students(db, body.ids)
+    for s in stus:
+        for k, v in data.items():
+            if k == "guardian_phone":
+                raw = (v or "").strip()
+                s.guardian_phone = encrypt_phone(raw) if raw else None
+            else:
+                setattr(s, k, v)
+    db.commit()
+    return ok({"updated": len(stus)}, message=f"已更新 {len(stus)} 名学生")
+
+
 @router.post("")
 def create_student(body: StudentIn, user: User = Depends(get_current_user),
                    db: Session = Depends(get_db)):
+    get_class(db, body.class_id)
     if body.status not in STATUS_LIST:
         raise BizError("状态只能是 在读/休学/转学")
-    _check_no_conflict(db, body.class_id, body.student_no, body.name)
+    if body.gender not in ("男", "女"):
+        raise BizError("性别只能是 男/女")
+    name = body.name.strip()
+    student_no = body.student_no.strip()
+    if not name or not student_no:
+        raise BizError("姓名和学号不能为空")
+    _check_no_conflict(db, body.class_id, student_no, name)
     phone = body.guardian_phone or ""
-    stu = Student(**{**body.model_dump(exclude={"guardian_phone"}),
+    values = body.model_dump(exclude={"guardian_phone"})
+    values.update({"name": name, "student_no": student_no})
+    stu = Student(**{**values,
                      "guardian_phone": encrypt_phone(phone) if phone else None})
     db.add(stu)
     db.commit()
@@ -133,12 +203,18 @@ def update_student(student_id: int, body: StudentUpdate,
     data = body.model_dump(exclude_unset=True)
     new_name = data.get("name", stu.name)
     new_no = data.get("student_no", stu.student_no or "")
-    _check_no_conflict(db, stu.class_id, new_no, new_name, exclude_id=stu.id)
+    if not str(new_name or "").strip() or not str(new_no or "").strip():
+        raise BizError("姓名和学号不能为空")
+    data["name"] = str(new_name).strip()
+    data["student_no"] = str(new_no).strip()
+    _check_no_conflict(db, stu.class_id, data["student_no"], data["name"], exclude_id=stu.id)
     if "guardian_phone" in data:
         phone = data.pop("guardian_phone") or ""
         stu.guardian_phone = encrypt_phone(phone) if phone else None
     if "status" in data and data["status"] not in STATUS_LIST:
         raise BizError("状态只能是 在读/休学/转学")
+    if "gender" in data and data["gender"] not in ("男", "女"):
+        raise BizError("性别只能是 男/女")
     for k, v in data.items():
         setattr(stu, k, v)
     db.commit()

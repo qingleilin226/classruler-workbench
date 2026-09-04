@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 """班委名单：职位卡片墙、任职起止日期、导出 HTML 任职证明（可打印）。"""
 from datetime import date
+from html import escape
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..deps import get_current_user, get_class
+from ..deps import get_current_user, get_class, require_student
 from ..exceptions import BizError, ok
 from ..models import Committee, Student, User
 
@@ -44,8 +45,10 @@ def _to_dict(c: Committee) -> dict:
 def list_committee(class_id: int = Query(...),
                    user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     get_class(db, class_id)
-    items = db.query(Committee).filter(
-        Committee.class_id == class_id, Committee.is_deleted.is_(False)
+    items = db.query(Committee).join(Student, Student.id == Committee.student_id).filter(
+        Committee.class_id == class_id,
+        Committee.is_deleted.is_(False),
+        Student.is_deleted.is_(False),
     ).order_by(Committee.position).all()
     return ok([_to_dict(c) for c in items])
 
@@ -56,10 +59,7 @@ def create_committee(body: CommitteeIn, user: User = Depends(get_current_user),
     get_class(db, body.class_id)
     if body.position not in POSITIONS:
         raise BizError(f"职位必须是 {'/'.join(POSITIONS)} 之一")
-    stu = db.query(Student).filter(Student.id == body.student_id,
-                                   Student.is_deleted.is_(False)).first()
-    if not stu:
-        raise BizError("学生不存在")
+    stu = require_student(db, body.student_id, body.class_id)
     # 同一职位同一时段不重复任职
     exist = db.query(Committee).filter(
         Committee.class_id == body.class_id, Committee.position == body.position,
@@ -83,6 +83,8 @@ def update_committee(cid: int, body: CommitteeUpdate,
     data = body.model_dump(exclude_unset=True)
     if "position" in data and data["position"] not in POSITIONS:
         raise BizError(f"职位必须是 {'/'.join(POSITIONS)} 之一")
+    if "student_id" in data:
+        require_student(db, data["student_id"], c.class_id)
     for k, v in data.items():
         setattr(c, k, v)
     db.commit()
@@ -110,11 +112,15 @@ def certificate(cid: int, user: User = Depends(get_current_user),
     if not c:
         raise BizError("班委记录不存在", code=404)
     cls = get_class(db, c.class_id)
-    stu = c.student
+    stu = require_student(db, c.student_id, c.class_id)
     end = c.end_date.strftime("%Y年%m月%d日") if c.end_date else "（至今）"
+    student_name = escape(stu.name)
+    student_no = escape(stu.student_no)
+    class_name = escape(cls.name)
+    position = escape(c.position)
     html = f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
-<title>任职证明 - {stu.name}</title>
+<title>任职证明 - {student_name}</title>
 <style>
   body {{ font-family: "SimSun", "宋体", serif; padding: 60px 80px; color: #222; }}
   h1 {{ text-align: center; letter-spacing: 8px; font-size: 28px; margin-bottom: 50px; }}
@@ -124,15 +130,15 @@ def certificate(cid: int, user: User = Depends(get_current_user),
 </style></head><body>
 <h1>任 职 证 明</h1>
 <div class="content">
-兹证明 <span class="name">{stu.name}</span>（学号：{stu.student_no}），
-系 <span class="name">{cls.name}</span> 学生。该生于
+兹证明 <span class="name">{student_name}</span>（学号：{student_no}），
+系 <span class="name">{class_name}</span> 学生。该生于
 <span class="name">{c.start_date.strftime('%Y年%m月%d日')}</span> 至
 <span class="name">{end}</span> 期间，担任班级
-<span class="name">{c.position}</span> 一职。任职期间工作认真负责，表现良好。
+<span class="name">{position}</span> 一职。任职期间工作认真负责，表现良好。
 </div>
 <div class="footer">
 班主任（签字）：________<br>
-{cls.name}　{date.today().strftime('%Y年%m月%d日')}
+{class_name}　{date.today().strftime('%Y年%m月%d日')}
 </div>
 <script>window.onload = function(){{ setTimeout(function(){{ window.print(); }}, 300); }}</script>
 </body></html>"""

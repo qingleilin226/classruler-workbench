@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..deps import get_current_user, get_class, require_semester
+from ..deps import get_current_user, get_class, require_semester, require_student
 from ..exceptions import BizError, ok
 from ..models import SeatDetail, SeatPlan, Student, User
 from ..utils.excel_export import export_excel
@@ -104,9 +104,7 @@ def save_seat_plan(body: SeatGridIn, user: User = Depends(get_current_user),
         if sid in seen:
             raise BizError(f"学生 ID {sid} 在网格中出现了多次，请检查")
         seen.add(sid)
-        if not db.query(Student).filter(Student.id == sid,
-                                        Student.is_deleted.is_(False)).first():
-            raise BizError(f"座位中的学生(ID {sid})不存在或已转出")
+        require_student(db, sid, body.class_id)
 
     plan = SeatPlan(class_id=body.class_id, semester_id=body.semester_id,
                     effective_date=date.today(), remark=body.remark or "")

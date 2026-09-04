@@ -55,8 +55,8 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(Exception)
-    async def unhandled_exception_handler(_request: Request, exc: Exception):
-        logger.exception("未处理异常: %s", exc)
+    async def unhandled_exception_handler(request: Request, exc: Exception):
+        logger.exception("未处理异常 %s %s: %s", request.method, request.url.path, exc)
         return JSONResponse(
             status_code=500,
             content={"code": 500, "message": "服务器内部错误，请查看服务端日志", "data": {}},

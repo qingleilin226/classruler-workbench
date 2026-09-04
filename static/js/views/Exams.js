@@ -4,7 +4,7 @@
  * 支持 Excel 多Sheet导入（列名→科目）、手动逐行录入。
  */
 (function () {
-  const { ref, reactive, computed, onMounted, watch, nextTick } = Vue;
+  const { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } = Vue;
 
   window.ExamsView = {
     name: "ExamsView",
@@ -19,12 +19,35 @@
       const chartEl = ref(null);
       let chart = null;
       const importVisible = ref(false);
+      const importSetupDialog = ref(false);
+      const importMode = ref("new");
+      const importForm = reactive({ exam_id: null, name: "", exam_date: "" });
+      const importExtra = computed(() => importMode.value === "existing"
+        ? {
+            class_id: store.currentClassId,
+            semester_id: store.currentSemesterId,
+            exam_id: importForm.exam_id,
+          }
+        : {
+            class_id: store.currentClassId,
+            semester_id: store.currentSemesterId,
+            exam_id: null,
+            exam_name: importForm.name.trim(),
+            exam_date: importForm.exam_date,
+          });
       const addDialog = ref(false);
       const addForm = reactive({ name: "", exam_date: "", subjects: "语文,数学,英语" });
       const manualDialog = ref(false);
       const manualForm = reactive({ student_id: null, subject: "", score: null });
       const students = ref([]);
       const subjectsOfExam = ref([]);
+      const personalDialog = ref(false);
+      const personalLoading = ref(false);
+      const personalStudentId = ref(null);
+      const personalSubject = ref("");
+      const personalData = ref(null);
+      const personalChartEl = ref(null);
+      let personalChart = null;
 
       async function loadExams() {
         if (!store.currentClassId || !store.currentSemesterId) {
@@ -73,10 +96,24 @@
         });
       }
 
-      onMounted(loadExams);
+      const onResize = () => {
+        if (chart) chart.resize();
+        if (personalChart) personalChart.resize();
+      };
+      onMounted(() => {
+        window.addEventListener("resize", onResize);
+        loadExams();
+      });
+      onUnmounted(() => {
+        window.removeEventListener("resize", onResize);
+        if (chart) chart.dispose();
+        chart = null;
+        if (personalChart) personalChart.dispose();
+        personalChart = null;
+      });
       watch(() => [store.currentClassId, store.currentSemesterId], loadExams);
       watch([examId, subject], loadAnalysis);
-      window.addEventListener("resize", () => chart && chart.resize());
+      watch(personalSubject, () => nextTick(renderPersonalChart));
 
       async function onExport() {
         if (!examId.value) {
@@ -89,15 +126,15 @@
       }
 
       async function addExam() {
-        if (!addForm.name) {
-          ElMessage.warning("请输入考试名称");
+        if (!addForm.name || !addForm.exam_date) {
+          ElMessage.warning("请填写考试名称并选择实际考试日期");
           return;
         }
         await window.api.post("/api/exams", {
           class_id: store.currentClassId,
           semester_id: store.currentSemesterId,
           name: addForm.name,
-          exam_date: addForm.exam_date || undefined,
+          exam_date: addForm.exam_date,
           subjects: addForm.subjects.split(/[,，、]/).map((s) => s.trim()).filter(Boolean),
         });
         ElMessage.success("考试创建成功，可手动录入或导入成绩");
@@ -106,9 +143,101 @@
         loadExams();
       }
 
+      function openImportSetup() {
+        if (!store.currentClassId || !store.currentSemesterId) {
+          ElMessage.warning("请先选择班级和学期");
+          return;
+        }
+        importMode.value = "new";
+        importForm.exam_id = examId.value;
+        importForm.name = "";
+        importForm.exam_date = "";
+        importSetupDialog.value = true;
+      }
+
+      function startImport() {
+        if (importMode.value === "new") {
+          if (!importForm.name.trim() || !importForm.exam_date) {
+            ElMessage.warning("新建考试必须填写考试名称并选择实际考试日期");
+            return;
+          }
+        } else if (!importForm.exam_id) {
+          ElMessage.warning("请选择要导入成绩的已有考试");
+          return;
+        }
+        importSetupDialog.value = false;
+        nextTick(() => (importVisible.value = true));
+      }
+
       async function loadStudents() {
         students.value = await window.api.get("/api/students", {
           class_id: store.currentClassId });
+      }
+
+      async function openPersonalAnalysis() {
+        if (!store.currentClassId) {
+          ElMessage.warning("请先选择班级");
+          return;
+        }
+        personalStudentId.value = null;
+        personalSubject.value = "";
+        personalData.value = null;
+        personalDialog.value = true;
+        await loadStudents();
+      }
+
+      async function loadPersonalHistory() {
+        if (!personalStudentId.value) {
+          personalData.value = null;
+          return;
+        }
+        personalLoading.value = true;
+        try {
+          personalData.value = await window.api.get("/api/exams/student-history", {
+            class_id: store.currentClassId,
+            student_id: personalStudentId.value,
+          });
+          const subjects = personalData.value.subjects || [];
+          const preferred = ["六门总分", "总分", "语数英总分"];
+          personalSubject.value = preferred.find((item) => subjects.includes(item))
+            || subjects.find((item) => item.includes("总分")) || subjects[0] || "";
+          nextTick(renderPersonalChart);
+        } finally {
+          personalLoading.value = false;
+        }
+      }
+
+      function renderPersonalChart() {
+        if (typeof echarts === "undefined" || !personalChartEl.value ||
+            !personalData.value || !personalSubject.value) return;
+        if (!personalChart) personalChart = echarts.init(personalChartEl.value);
+        const records = personalData.value.records || [];
+        personalChart.setOption({
+          tooltip: { trigger: "axis" },
+          grid: { left: 52, right: 24, top: 36, bottom: 58 },
+          xAxis: {
+            type: "category",
+            data: records.map((item) => item.exam_name),
+            axisLabel: { interval: 0, rotate: records.length > 5 ? 25 : 0 },
+          },
+          yAxis: { type: "value", scale: true },
+          series: [{
+            name: personalSubject.value,
+            type: "line",
+            smooth: true,
+            connectNulls: false,
+            symbolSize: 8,
+            data: records.map((item) => item.scores[personalSubject.value]?.score ?? null),
+            lineStyle: { width: 3, color: "#2b5da8" },
+            itemStyle: { color: "#2b5da8" },
+            areaStyle: { color: "rgba(43,93,168,.10)" },
+          }],
+        }, true);
+      }
+
+      function closePersonalAnalysis() {
+        if (personalChart) personalChart.dispose();
+        personalChart = null;
       }
 
       async function openManual() {
@@ -146,7 +275,11 @@
 
       return {
         store, exams, examId, subject, analysis, loading, chartEl, importVisible,
+        importSetupDialog, importMode, importForm, importExtra, openImportSetup, startImport,
         addDialog, addForm, manualDialog, manualForm, students, subjectsOfExam,
+        personalDialog, personalLoading, personalStudentId, personalSubject,
+        personalData, personalChartEl, openPersonalAnalysis, loadPersonalHistory,
+        closePersonalAnalysis,
         loadExams, loadAnalysis, onExport, addExam, openManual, saveManualScore, removeExam,
       };
     },
@@ -165,7 +298,8 @@
           </el-select>
           <div style="flex:1"></div>
           <el-button :icon="'Plus'" @click="addDialog = true">添加考试</el-button>
-          <el-button :icon="'Upload'" @click="importVisible = true">导入成绩（Excel）</el-button>
+          <el-button :icon="'Upload'" @click="openImportSetup">导入成绩（Excel）</el-button>
+          <el-button :icon="'User'" @click="openPersonalAnalysis">个人成绩分析</el-button>
           <el-button type="primary" :icon="'EditPen'" @click="openManual">手动录入成绩</el-button>
           <el-button :icon="'Download'" @click="onExport">导出为Excel</el-button>
         </div>
@@ -221,13 +355,46 @@
         </template>
       </div>
 
+      <!-- 导入前明确考试及实际日期 -->
+      <el-dialog v-model="importSetupDialog" title="设置导入考试信息" width="500px">
+        <el-form label-width="100px">
+          <el-form-item label="导入方式">
+            <el-radio-group v-model="importMode">
+              <el-radio-button label="new">新建考试</el-radio-button>
+              <el-radio-button label="existing">已有考试</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
+          <template v-if="importMode === 'new'">
+            <el-form-item label="考试名称" required>
+              <el-input v-model="importForm.name" placeholder="例如：第一次月考" maxlength="64" />
+            </el-form-item>
+            <el-form-item label="考试日期" required>
+              <el-date-picker v-model="importForm.exam_date" type="date" value-format="YYYY-MM-DD"
+                              style="width:100%" placeholder="请选择实际考试日期" />
+            </el-form-item>
+            <el-alert type="info" show-icon :closable="false"
+                      title="考试日期必须手动选择，不会使用文件导入当天的日期" />
+          </template>
+          <el-form-item v-else label="选择考试" required>
+            <el-select v-model="importForm.exam_id" style="width:100%" placeholder="请选择已有考试">
+              <el-option v-for="e in exams" :key="e.id"
+                         :label="e.name + '（' + e.exam_date + '）'" :value="e.id" />
+            </el-select>
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="importSetupDialog = false">取消</el-button>
+          <el-button type="primary" @click="startImport">下一步：选择文件</el-button>
+        </template>
+      </el-dialog>
+
       <!-- 添加考试 -->
       <el-dialog v-model="addDialog" title="添加考试成绩（考试）" width="480px">
         <el-form label-width="90px">
           <el-form-item label="考试名称">
             <el-input v-model="addForm.name" placeholder="如：期中考试" />
           </el-form-item>
-          <el-form-item label="考试日期">
+          <el-form-item label="考试日期" required>
             <el-date-picker v-model="addForm.exam_date" type="date" value-format="YYYY-MM-DD"
                             style="width:100%" placeholder="选择日期" />
           </el-form-item>
@@ -257,7 +424,7 @@
             </el-select>
           </el-form-item>
           <el-form-item label="分数">
-            <el-input-number v-model="manualForm.score" :min="0" :max="200" style="width:100%" />
+            <el-input-number v-model="manualForm.score" :min="-1000" :max="750" :step="0.1" style="width:100%" />
           </el-form-item>
         </el-form>
         <template #footer>
@@ -266,9 +433,73 @@
         </template>
       </el-dialog>
 
+      <!-- 个人跨考试成绩分析 -->
+      <el-dialog v-model="personalDialog" title="个人成绩分析" width="88%"
+                 destroy-on-close @closed="closePersonalAnalysis">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px">
+          <span style="color:#606266">学生：</span>
+          <el-select v-model="personalStudentId" filterable clearable
+                     placeholder="输入姓名或学号搜索" style="width:320px"
+                     @change="loadPersonalHistory">
+            <el-option v-for="s in students" :key="s.id"
+                       :label="s.name + '（' + s.student_no + '）'" :value="s.id" />
+          </el-select>
+          <el-button type="primary" :disabled="!personalStudentId"
+                     @click="loadPersonalHistory">查询</el-button>
+          <template v-if="personalData?.student">
+            <el-tag size="large">{{ personalData.student.name }}</el-tag>
+            <span style="color:#7a8194;font-size:13px">学号：{{ personalData.student.student_no }}</span>
+            <span style="color:#7a8194;font-size:13px">
+              共 {{ personalData.exam_count }} 次考试，{{ personalData.score_count }} 条成绩
+            </span>
+          </template>
+        </div>
+
+        <div v-loading="personalLoading" style="min-height:240px">
+          <el-empty v-if="!personalData" description="请按姓名或学号选择学生" />
+          <template v-else>
+            <el-empty v-if="!personalData.records.length" description="该班级还没有考试记录" />
+            <template v-else>
+              <div class="page-card" style="margin-bottom:16px;padding:14px 16px">
+                <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+                  <b>成绩趋势</b>
+                  <el-select v-model="personalSubject" style="width:180px"
+                             placeholder="选择科目" :disabled="!personalData.subjects.length">
+                    <el-option v-for="s in personalData.subjects" :key="s" :label="s" :value="s" />
+                  </el-select>
+                </div>
+                <div v-if="personalData.subjects.length" ref="personalChartEl" style="height:300px"></div>
+                <el-empty v-else description="该学生暂时没有成绩数据" :image-size="70" />
+              </div>
+
+              <el-table :data="personalData.records" border stripe size="small" max-height="430">
+                <el-table-column prop="exam_date" label="考试日期" width="110" fixed />
+                <el-table-column prop="semester_name" label="学期" min-width="120" />
+                <el-table-column prop="exam_name" label="考试" min-width="150" fixed />
+                <el-table-column v-for="sub in personalData.subjects" :key="sub"
+                                 :label="sub" min-width="110" align="center">
+                  <template #default="{ row }">
+                    <template v-if="row.scores[sub]">
+                      <b>{{ row.scores[sub].score }}</b>
+                      <span v-if="row.scores[sub].rank" style="color:#7a8194;font-size:11px">
+                        （第{{ row.scores[sub].rank }}名）
+                      </span>
+                    </template>
+                    <span v-else style="color:#c0c4cc">—</span>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </template>
+          </template>
+        </div>
+        <template #footer>
+          <el-button @click="personalDialog = false">关闭</el-button>
+        </template>
+      </el-dialog>
+
       <!-- 成绩导入（Excel 多Sheet，列名→科目） -->
       <import-modal v-model="importVisible" target="exam_scores"
-                    :extra="{ class_id: store.currentClassId, semester_id: store.currentSemesterId, exam_id: examId }"
+                    :extra="importExtra"
                     title="导入考试成绩" @success="loadExams" />
     </div>
     `,

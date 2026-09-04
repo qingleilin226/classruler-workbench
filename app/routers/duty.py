@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..deps import get_current_user, get_class
+from ..deps import get_current_user, get_class, require_student
 from ..exceptions import BizError, ok
 from ..models import DutyDetail, DutyTemplate, Student, User
 from ..utils.excel_export import export_excel
@@ -26,14 +26,14 @@ class DutySetIn(BaseModel):
     assignments: list
 
 
-def _template_of(db: Session, class_id: int) -> DutyTemplate:
+def _template_of(db: Session, class_id: int, create: bool = False):
     tpl = db.query(DutyTemplate).filter(
         DutyTemplate.class_id == class_id, DutyTemplate.is_deleted.is_(False)
     ).first()
-    if not tpl:
+    if not tpl and create:
         tpl = DutyTemplate(class_id=class_id, template_type="week_cycle")
         db.add(tpl)
-        db.commit()
+        db.flush()
     return tpl
 
 
@@ -48,7 +48,10 @@ def _rotate_students(students: list, offset: int) -> list:
 
 def _week_view(db: Session, class_id: int, week_offset: int) -> dict:
     tpl = _template_of(db, class_id)
-    details = db.query(DutyDetail).filter(DutyDetail.template_id == tpl.id).all()
+    details = [] if not tpl else db.query(DutyDetail).filter(
+        DutyDetail.template_id == tpl.id,
+        DutyDetail.is_deleted.is_(False),
+    ).all()
     # 按 weekday -> duty_type 组织学生队列
     by_slot = {}  # (weekday, duty_type) -> [student_id...]
     order = []
@@ -63,7 +66,10 @@ def _week_view(db: Session, class_id: int, week_offset: int) -> dict:
     for (weekday, dtype), stu_ids in by_slot.items():
         students = []
         for sid in stu_ids:
-            stu = db.query(Student).filter(Student.id == sid).first()
+            stu = db.query(Student).filter(
+                Student.id == sid,
+                Student.class_id == class_id,
+            ).first()
             if stu and not stu.is_deleted:
                 students.append({"id": stu.id, "name": stu.name})
         rotated = _rotate_students(students, week_offset)
@@ -99,7 +105,7 @@ def set_duty_day(body: DutySetIn, user: User = Depends(get_current_user),
     get_class(db, body.class_id)
     if not 1 <= body.weekday <= 7:
         raise BizError("星期必须在 1-7 之间")
-    tpl = _template_of(db, body.class_id)
+    tpl = _template_of(db, body.class_id, create=True)
 
     # 删除该天原有安排（软删除同理会污染唯一性，值日为业务配置直接物理清理该天即可，
     # 但为符合“所有删除均为软删除”，这里对旧记录做软删除并新建）
@@ -112,10 +118,7 @@ def set_duty_day(body: DutySetIn, user: User = Depends(get_current_user),
         dtype = item.get("duty_type", "扫地")
         if dtype not in DUTY_TYPES:
             raise BizError(f"值日类型必须是 {'/'.join(DUTY_TYPES)}")
-        stu = db.query(Student).filter(Student.id == item.get("student_id"),
-                                       Student.is_deleted.is_(False)).first()
-        if not stu:
-            raise BizError(f"学生(ID {item.get('student_id')})不存在")
+        stu = require_student(db, item.get("student_id"), body.class_id)
         db.add(DutyDetail(template_id=tpl.id, weekday=body.weekday,
                           student_id=stu.id, duty_type=dtype))
     db.commit()
@@ -129,6 +132,8 @@ def rotate_duty(payload: dict, user: User = Depends(get_current_user),
     class_id = payload.get("class_id")
     get_class(db, class_id)
     tpl = _template_of(db, class_id)
+    if not tpl:
+        raise BizError("当前班级暂无值日安排")
     details = db.query(DutyDetail).filter(DutyDetail.template_id == tpl.id,
                                           DutyDetail.is_deleted.is_(False)).all()
 

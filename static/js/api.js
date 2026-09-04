@@ -81,9 +81,18 @@
       const res = await fetch(full, {
         headers: token ? { Authorization: "Bearer " + token } : {},
       });
-      if (!res.ok) {
+      const contentType = res.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
         const data = await res.json().catch(() => ({}));
+        if (data.code === 401) {
+          this.setToken("");
+          location.hash = "#/login";
+        }
         ElMessage.error(data.message || "导出失败");
+        return;
+      }
+      if (!res.ok) {
+        ElMessage.error("导出失败");
         return;
       }
       const blob = await res.blob();

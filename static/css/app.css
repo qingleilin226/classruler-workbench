@@ -103,6 +103,7 @@ html, body, #app {
 }
 
 .topbar .page-title { font-size: 16px; font-weight: 600; }
+.mobile-nav { display: none; }
 
 .topbar .spacer { flex: 1; }
 
@@ -359,6 +360,11 @@ html, body, #app {
 
 @media screen and (max-width: 768px) {
   .sidebar { display: none; }
+  .mobile-nav { display: block; width: 150px; }
+  .topbar { gap: 8px; padding: 0 10px; }
+  .topbar .page-title { display: none; }
+  .topbar .user-info > span { display: none; }
+  .content-area { padding: 12px 10px; }
   .stat-cards { grid-template-columns: 1fr; }
   .duty-week-grid { grid-template-columns: repeat(2, 1fr); }
 }

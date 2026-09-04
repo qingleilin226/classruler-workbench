@@ -32,7 +32,7 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == body.username).first()
     if not user or not verify_password(body.password, user.password_hash):
         raise BizError("用户名或密码错误", code=401)
-    return ok({"token": create_token(user.id), "username": user.username,
+    return ok({"token": create_token(user.id, user.password_hash), "username": user.username,
                "display_name": user.display_name})
 
 
